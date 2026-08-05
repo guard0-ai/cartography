@@ -20,6 +20,7 @@ from cartography.models.aws.ssm.instance_information import SSMInstanceInformati
 from cartography.models.aws.ssm.instance_patch import SSMInstancePatchSchema
 from cartography.models.aws.ssm.parameters import PublicSSMParameterSchema
 from cartography.models.aws.ssm.parameters import SSMParameterSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import dict_date_to_epoch
 from cartography.util import timeit
@@ -62,7 +63,9 @@ def get_instance_ids(
     current_aws_account_id: str,
 ) -> List[str]:
     get_instances_query = """
-    MATCH (:AWSAccount{id: $AWS_ACCOUNT_ID})-[:RESOURCE]->(i:AWSEC2Instance)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ACCOUNT_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (i:AWSEC2Instance {guard0_org_id: $GUARD0_ORG_ID})
     WHERE i.region = $Region
     RETURN i.id
     """
@@ -71,6 +74,7 @@ def get_instance_ids(
         get_instances_query,
         AWS_ACCOUNT_ID=current_aws_account_id,
         Region=region,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
 
 

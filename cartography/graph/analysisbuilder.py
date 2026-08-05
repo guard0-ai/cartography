@@ -31,6 +31,8 @@ from cartography.graph.analysis import Var
 from cartography.graph.job import GraphJob
 from cartography.graph.statement import GraphStatement
 from cartography.models.core.relationships import LinkDirection
+from cartography.tenancy import GUARD0_ORG_PARAMETER
+from cartography.tenancy import guard0_scope_required
 
 
 def compile_query(
@@ -42,7 +44,7 @@ def compile_query(
     if statement.query:
         if scope or statement.incremental_on:
             raise ValueError("Raw analysis queries do not support structural scoping.")
-        return statement.query
+        return _tenant_scope_patterns(statement.query)
     if statement.match is None:
         raise ValueError("AnalysisStatement requires match or query.")
     for effect in statement.effects:
@@ -51,13 +53,14 @@ def compile_query(
     if scope:
         prefixes.append(_declared_scope_match(scope, scope_index))
     prefixes.extend(_incremental_matches(statement))
-    return "\n".join(
+    query = "\n".join(
         (
             *prefixes,
             statement.match.strip(),
             *(_compile_effect(e) for e in statement.effects),
         )
     )
+    return _tenant_scope_patterns(query)
 
 
 def to_graph_statement(
@@ -130,7 +133,7 @@ def to_graph_job(job: AnalysisJob) -> GraphJob:
 
 
 def cleanup_query(effect: AnalysisEffect, scope: ScopeById | None) -> str:
-    return _cleanup_query(effect, scope)
+    return _tenant_scope_patterns(_cleanup_query(effect, scope))
 
 
 def _effects(job: AnalysisJob) -> tuple[StatementEffect, ...]:
@@ -162,6 +165,75 @@ def _cleanup_statement(
 
 
 _CYPHER_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_TENANT_NODE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"\("
+    r"(?P<head>\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*"
+    r"(?::[A-Za-z_][A-Za-z0-9_]*\s*)+)"
+    r"(?P<properties>\{[^{}]*\})?"
+    r"\s*\)",
+)
+_TENANT_BARE_NODE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"\((?P<variable>\s*[A-Za-z_][A-Za-z0-9_]*\s*)\)"
+    r"(?=\s*(?:-|<))",
+)
+_TENANT_RELATIONSHIP_PATTERN = re.compile(
+    r"\["
+    r"(?P<head>\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*"
+    r":[A-Za-z_][A-Za-z0-9_]*(?:\|[A-Za-z_][A-Za-z0-9_]*)*"
+    r"(?:\s*\*[^{}\]]*)?\s*)"
+    r"(?P<properties>\{[^{}]*\})?"
+    r"\s*\]",
+)
+
+
+def _tenant_properties(properties: str | None) -> str:
+    tenant_property = f"guard0_org_id: ${GUARD0_ORG_PARAMETER}"
+    if not properties:
+        return "{" + tenant_property + "}"
+    contents = properties[1:-1].strip()
+    if "guard0_org_id" in contents:
+        return properties
+    return "{" + tenant_property + (", " + contents if contents else "") + "}"
+
+
+def _scope_labeled_node(match: re.Match[str]) -> str:
+    return (
+        "("
+        + match.group("head").rstrip()
+        + " "
+        + _tenant_properties(match.group("properties"))
+        + ")"
+    )
+
+
+def _scope_bare_node(match: re.Match[str]) -> str:
+    return (
+        "("
+        + match.group("variable").strip()
+        + " {guard0_org_id: $"
+        + GUARD0_ORG_PARAMETER
+        + "})"
+    )
+
+
+def _scope_relationship(match: re.Match[str]) -> str:
+    return (
+        "["
+        + match.group("head").rstrip()
+        + " "
+        + _tenant_properties(match.group("properties"))
+        + "]"
+    )
+
+
+def _tenant_scope_patterns(query: str) -> str:
+    if not guard0_scope_required():
+        return query
+    scoped = _TENANT_NODE_PATTERN.sub(_scope_labeled_node, query)
+    scoped = _TENANT_BARE_NODE_PATTERN.sub(_scope_bare_node, scoped)
+    return _TENANT_RELATIONSHIP_PATTERN.sub(_scope_relationship, scoped)
 
 
 def _validate_identifier(value: str, description: str) -> str:

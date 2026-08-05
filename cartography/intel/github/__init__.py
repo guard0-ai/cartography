@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import logging
 from typing import Any
@@ -21,10 +22,37 @@ import cartography.intel.github.teams
 import cartography.intel.github.users
 from cartography.client.core.tx import read_list_of_values_tx
 from cartography.config import Config
+from cartography.connector_outcome import ConnectorOutcome
+from cartography.connector_outcome import emit_connector_outcome
 from cartography.intel.github.app_auth import make_credential
+from cartography.models.github.orgs import GitHubOrganizationSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
+
+
+def _is_github_integration_permission_error(exc: Exception) -> bool:
+    return "Resource not accessible by integration" in str(exc)
+
+
+def _load_minimal_github_organization(
+    neo4j_session: neo4j.Session,
+    common_job_parameters: dict[str, Any],
+    organization: str,
+) -> None:
+    org_data = [
+        {
+            "login": organization,
+            "url": f"https://github.com/{organization}",
+        },
+    ]
+    cartography.intel.github.users.load_organization(
+        neo4j_session,
+        GitHubOrganizationSchema(),
+        org_data,
+        common_job_parameters["UPDATE_TAG"],
+    )
 
 
 def _get_repos_from_graph(neo4j_session: neo4j.Session, organization: str) -> list[str]:
@@ -37,7 +65,9 @@ def _get_repos_from_graph(neo4j_session: neo4j.Session, organization: str) -> li
     """
     org_url = f"https://github.com/{organization}"
     query = """
-    MATCH (org:GitHubOrganization {id: $org_url})<-[:OWNER]-(repo:GitHubRepository)
+    MATCH (org:GitHubOrganization {guard0_org_id: $guard0_org_id, id: $org_url})
+          <-[:OWNER {guard0_org_id: $guard0_org_id}]-
+          (repo:GitHubRepository {guard0_org_id: $guard0_org_id})
     RETURN repo.name
     ORDER BY repo.name
     """
@@ -47,6 +77,7 @@ def _get_repos_from_graph(neo4j_session: neo4j.Session, organization: str) -> li
             read_list_of_values_tx,
             query,
             org_url=org_url,
+            guard0_org_id=current_guard0_org_id(),
         ),
     )
 
@@ -100,8 +131,51 @@ def start_github_ingestion(
         return
 
     auth_tokens = json.loads(base64.b64decode(config.github_config).decode())
+    if getattr(config, "github_best_effort_mode", False) is True:
+        succeeded = 0
+        failed = 0
+        for auth_data in auth_tokens["organization"]:
+            isolated_config = copy.copy(config)
+            isolated_config.github_best_effort_mode = False
+            isolated_config.github_config = base64.b64encode(
+                json.dumps({"organization": [auth_data]}).encode(),
+            ).decode()
+            try:
+                start_github_ingestion(
+                    neo4j_session,
+                    isolated_config,
+                    skip_unscoped_cleanup=True,
+                )
+                succeeded += 1
+            except Exception:
+                failed += 1
+                logger.warning(
+                    "GitHub connector %s failed; continuing with remaining installations.",
+                    auth_data.get("name", "<unknown>"),
+                    exc_info=True,
+                )
+        if succeeded > 0 and failed == 0 and not skip_unscoped_cleanup:
+            common_job_parameters = {
+                "UPDATE_TAG": config.update_tag,
+                "GUARD0_ORG_ID": config.guard0_org_id,
+            }
+            cleanup_unscoped_github_resources(
+                neo4j_session,
+                common_job_parameters,
+            )
+        emit_connector_outcome(
+            ConnectorOutcome(
+                provider="github",
+                attempted=len(auth_tokens["organization"]),
+                succeeded=succeeded,
+                failed=failed,
+            ),
+        )
+        return
+
     common_job_parameters = {
         "UPDATE_TAG": config.update_tag,
+        "GUARD0_ORG_ID": config.guard0_org_id,
     }
     processed_any_org = False
 
@@ -114,13 +188,28 @@ def start_github_ingestion(
         # credential is a GitHubCredential (duck-typed as str by _resolve_token in util.py)
         token: Any = credential
 
-        github_users = cartography.intel.github.users.sync(
-            neo4j_session,
-            common_job_parameters,
-            token,
-            api_url,
-            org_name,
-        )
+        github_users = []
+        try:
+            github_users = cartography.intel.github.users.sync(
+                neo4j_session,
+                common_job_parameters,
+                token,
+                api_url,
+                org_name,
+            )
+        except ValueError as exc:
+            if not _is_github_integration_permission_error(exc):
+                raise
+            logger.warning(
+                "Skipping GitHub users for org %s because the integration lacks "
+                "organization member access.",
+                org_name,
+            )
+            _load_minimal_github_organization(
+                neo4j_session,
+                common_job_parameters,
+                org_name,
+            )
         repo_sync_result = cartography.intel.github.repos.sync(
             neo4j_session,
             common_job_parameters,
@@ -142,13 +231,23 @@ def start_github_ingestion(
             api_url,
             org_name,
         )
-        github_teams = cartography.intel.github.teams.sync_github_teams(
-            neo4j_session,
-            common_job_parameters,
-            token,
-            api_url,
-            org_name,
-        )
+        github_teams = []
+        try:
+            github_teams = cartography.intel.github.teams.sync_github_teams(
+                neo4j_session,
+                common_job_parameters,
+                token,
+                api_url,
+                org_name,
+            )
+        except ValueError as exc:
+            if not _is_github_integration_permission_error(exc):
+                raise
+            logger.warning(
+                "Skipping GitHub teams for org %s because the integration lacks "
+                "organization member access.",
+                org_name,
+            )
         cartography.intel.github.codeowners.sync(
             neo4j_session,
             common_job_parameters,

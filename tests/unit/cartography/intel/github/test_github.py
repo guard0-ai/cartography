@@ -1,5 +1,6 @@
 import json
 import typing
+from base64 import b64decode
 from base64 import b64encode
 from copy import deepcopy
 from datetime import datetime
@@ -22,6 +23,57 @@ from cartography.intel.github.util import github_org_url
 from cartography.intel.github.util import handle_rate_limit_sleep
 from cartography.intel.github.util import is_github_dotcom_api_url
 from tests.data.github.rate_limit import RATE_LIMIT_RESPONSE_JSON
+
+
+def test_start_github_ingestion_best_effort_continues_after_installation_failure(
+    monkeypatch,
+) -> None:
+    import cartography.intel.github as github
+
+    github_config = {
+        "organization": [
+            {"name": "broken", "url": "https://api.github.com/graphql"},
+            {"name": "ready", "url": "https://api.github.com/graphql"},
+        ],
+    }
+    config = Mock(
+        github_config=b64encode(json.dumps(github_config).encode()).decode(),
+        github_best_effort_mode=True,
+        update_tag=123,
+        guard0_org_id="guard0-org",
+    )
+    original = github.start_github_ingestion
+    attempted: list[str] = []
+    outcomes = []
+
+    def dispatch(neo4j_session, child_config, *, skip_unscoped_cleanup=False):
+        if child_config.github_best_effort_mode:
+            return original(
+                neo4j_session,
+                child_config,
+                skip_unscoped_cleanup=skip_unscoped_cleanup,
+            )
+        child_payload = json.loads(
+            b64decode(child_config.github_config).decode(),
+        )
+        name = child_payload["organization"][0]["name"]
+        attempted.append(name)
+        if name == "broken":
+            raise RuntimeError("installation unavailable")
+        return None
+
+    cleanup = Mock()
+    monkeypatch.setattr(github, "start_github_ingestion", dispatch)
+    monkeypatch.setattr(github, "cleanup_unscoped_github_resources", cleanup)
+    monkeypatch.setattr(github, "emit_connector_outcome", outcomes.append)
+
+    dispatch(Mock(), config)
+
+    assert attempted == ["broken", "ready"]
+    assert outcomes[0].attempted == 2
+    assert outcomes[0].succeeded == 1
+    assert outcomes[0].failed == 1
+    cleanup.assert_not_called()
 
 
 @patch("cartography.intel.github.repos.cleanup_orphaned_github_branches")
@@ -85,6 +137,7 @@ def test_start_github_ingestion_defers_global_cleanup_until_after_all_orgs(
         github_config=b64encode(json.dumps(github_config).encode()).decode(),
         update_tag=123,
         github_commit_lookback_days=7,
+        guard0_org_id="guard0-org",
     )
     repo_sync_results = [
         GitHubRepoSyncResult(
@@ -158,14 +211,18 @@ def test_start_github_ingestion_defers_global_cleanup_until_after_all_orgs(
     second_codeowners_kwargs = mock_codeowners_sync.call_args_list[1].kwargs
     assert second_codeowners_kwargs["github_users"] == github_users_by_org[1]
     assert second_codeowners_kwargs["github_teams"] == github_teams_by_org[1]
-    mock_users_cleanup.assert_called_once_with(neo4j_session, {"UPDATE_TAG": 123})
+    tenant_job_parameters = {
+        "UPDATE_TAG": 123,
+        "GUARD0_ORG_ID": "guard0-org",
+    }
+    mock_users_cleanup.assert_called_once_with(neo4j_session, tenant_job_parameters)
     mock_cleanup_global_resources.assert_called_once_with(
         neo4j_session,
-        {"UPDATE_TAG": 123},
+        tenant_job_parameters,
     )
     mock_cleanup_orphaned_branches.assert_called_once_with(
         neo4j_session,
-        {"UPDATE_TAG": 123},
+        tenant_job_parameters,
     )
     assert mock_supply_chain_sync.call_count == 0
 

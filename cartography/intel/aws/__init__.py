@@ -24,6 +24,8 @@ from cartography.analysis.aws.analysis import AWS_LAMBDA_ECR
 from cartography.analysis.aws.analysis import AWS_LB_CONTAINER_EXPOSURE
 from cartography.analysis.aws.analysis import AWS_LB_NACL_DIRECT
 from cartography.config import Config
+from cartography.connector_outcome import ConnectorOutcome
+from cartography.connector_outcome import emit_connector_outcome
 from cartography.intel.aws.label_migrations import migrate_legacy_aws_labels
 from cartography.intel.aws.util.botocore_config import create_boto3_client
 from cartography.intel.aws.util.common import parse_and_validate_aws_account_ids
@@ -598,7 +600,7 @@ def _sync_multiple_accounts(
     regions: list[str] | None = None,
     organization_account_ids: Iterable[str] | None = None,
     use_explicit_profile: bool = False,
-) -> bool:
+) -> tuple[bool, int, int]:
     logger.info("Syncing AWS accounts: %s", ", ".join(accounts.values()))
     organizations.sync(neo4j_session, accounts, sync_tag, common_job_parameters)
     _sync_aws_organizations_for_accounts(
@@ -612,6 +614,7 @@ def _sync_multiple_accounts(
 
     failed_account_ids = []
     exception_tracebacks = []
+    successful_account_count = 0
 
     for profile_name, account_id in accounts.items():
         logger.info(
@@ -637,6 +640,7 @@ def _sync_multiple_accounts(
                 aws_requested_syncs=aws_requested_syncs,  # Could be replaced later with per-account requested syncs
                 aioboto3_session=aioboto3_session,
             )
+            successful_account_count += 1
         except Exception as e:
             if aws_best_effort_mode:
                 timestamp = datetime.datetime.now()
@@ -658,7 +662,9 @@ def _sync_multiple_accounts(
 
     if failed_account_ids:
         logger.error(f"AWS sync failed for accounts {failed_account_ids}")
-        raise Exception("\n".join(exception_tracebacks))
+        if not aws_best_effort_mode:
+            raise Exception("\n".join(exception_tracebacks))
+        return False, successful_account_count, len(failed_account_ids)
 
     del common_job_parameters["AWS_ID"]
 
@@ -670,8 +676,8 @@ def _sync_multiple_accounts(
             neo4j_session,
             common_job_parameters,
         )
-        return True
-    return False
+        return True, successful_account_count, 0
+    return False, successful_account_count, len(failed_account_ids)
 
 
 @timeit
@@ -751,6 +757,7 @@ def start_aws_ingestion(neo4j_session: neo4j.Session, config: Config) -> None:
     )
     common_job_parameters = {
         "UPDATE_TAG": config.update_tag,
+        "GUARD0_ORG_ID": config.guard0_org_id,
         "permission_relationships_file": config.permission_relationships_file,
         "aws_guardduty_severity_threshold": config.aws_guardduty_severity_threshold,
         "aws_cloudtrail_management_events_lookback_hours": config.aws_cloudtrail_management_events_lookback_hours,
@@ -773,15 +780,31 @@ def start_aws_ingestion(neo4j_session: neo4j.Session, config: Config) -> None:
         return
 
     if config.aws_sync_all_profiles:
+        attempted_account_count = len(
+            [
+                profile
+                for profile in boto3_session.available_profiles
+                if profile != "default"
+            ],
+        )
         aws_accounts = organizations.get_aws_accounts_from_botocore_config(
             boto3_session,
         )
     else:
+        attempted_account_count = 1
         aws_accounts = organizations.get_aws_account_default(boto3_session)
 
     if not aws_accounts:
         logger.warning(
             "No valid AWS credentials could be found. No AWS accounts can be synced. Exiting AWS sync stage.",
+        )
+        emit_connector_outcome(
+            ConnectorOutcome(
+                provider="aws",
+                attempted=attempted_account_count,
+                succeeded=0,
+                failed=attempted_account_count,
+            ),
         )
         return
     if len(list(aws_accounts.values())) != len(set(aws_accounts.values())):
@@ -811,7 +834,7 @@ def start_aws_ingestion(neo4j_session: neo4j.Session, config: Config) -> None:
     else:
         organization_account_ids = None
 
-    sync_successful = _sync_multiple_accounts(
+    sync_result = _sync_multiple_accounts(
         neo4j_session,
         aws_accounts,
         config.update_tag,
@@ -823,6 +846,23 @@ def start_aws_ingestion(neo4j_session: neo4j.Session, config: Config) -> None:
         # Today this flag mirrors aws_sync_all_profiles 1:1; it's named separately so _sync_multiple_accounts
         # stays decoupled from the CLI option should the two ever diverge.
         use_explicit_profile=config.aws_sync_all_profiles,
+    )
+    if isinstance(sync_result, tuple):
+        sync_successful, succeeded_account_count, failed_account_count = sync_result
+    else:
+        # Compatibility for external callers and tests that replace the helper
+        # with its historical boolean result.
+        sync_successful = sync_result
+        succeeded_account_count = len(aws_accounts) if sync_successful else 0
+        failed_account_count = 0 if sync_successful else len(aws_accounts)
+    failed_account_count += max(0, attempted_account_count - len(aws_accounts))
+    emit_connector_outcome(
+        ConnectorOutcome(
+            provider="aws",
+            attempted=attempted_account_count,
+            succeeded=succeeded_account_count,
+            failed=failed_account_count,
+        ),
     )
 
     if sync_successful:

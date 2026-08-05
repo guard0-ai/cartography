@@ -954,7 +954,9 @@ def test_start_aws_ingestion_passes_organization_account_ids(
 @mock.patch.object(cartography.intel.aws, "_sync_one_account", return_value=None)
 @mock.patch.object(cartography.intel.aws, "_perform_aws_analysis", return_value=None)
 @mock.patch.object(cartography.intel.aws, "run_cleanup_job")
-def test_start_aws_ingestion_raises_aggregated_exceptions_with_aws_best_effort_mode(
+@mock.patch.object(cartography.intel.aws.organizations, "sync", return_value=None)
+def test_start_aws_ingestion_continues_after_failures_with_aws_best_effort_mode(
+    mock_organizations_sync,
     mock_run_cleanup_job,
     mock_perform_analysis,
     mock_sync_one,
@@ -978,14 +980,9 @@ def test_start_aws_ingestion_raises_aggregated_exceptions_with_aws_best_effort_m
     }
 
     # Act
-    with raises(Exception) as e:
-        cartography.intel.aws.start_aws_ingestion(neo4j_session, test_config)
+    cartography.intel.aws.start_aws_ingestion(neo4j_session, test_config)
 
     # Assert
-    message = str(e.value)
-    assert message.count("KeyError") == 2
-    assert "test_account" in message
-    assert "test_account2" in message
     assert mock_sync_one.call_count == 2
     assert mock_sync_organizations_for_accounts.call_count == 1
     assert mock_run_cleanup_job.call_count == 0

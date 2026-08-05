@@ -4,6 +4,7 @@ from typing import Tuple
 import neo4j
 
 from cartography.client.core.tx import read_list_of_tuples_tx
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import timeit
 
 
@@ -39,11 +40,15 @@ def get_ecr_images(
     """
     # See https://community.neo4j.com/t/extract-list-of-nodes-and-labels-from-path/13665/4
     query = """
-MATCH (e1:AWSECRRepositoryImage)<-[:REPO_IMAGE]-(repo:AWSECRRepository)
-MATCH (repo)<-[:RESOURCE]-(:AWSAccount {id: $AWS_ID})
+MATCH (e1:AWSECRRepositoryImage {guard0_org_id: $GUARD0_ORG_ID})
+      <-[:REPO_IMAGE {guard0_org_id: $GUARD0_ORG_ID}]-
+      (repo:AWSECRRepository {guard0_org_id: $GUARD0_ORG_ID})
+MATCH (repo)<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-
+      (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
 
 // OPTIONAL traversal of parent hierarchy
-OPTIONAL MATCH path = (e1)-[:PARENT*1..]->(ancestor:AWSECRRepositoryImage)
+OPTIONAL MATCH path = (e1)-[:PARENT*1.. {guard0_org_id: $GUARD0_ORG_ID}]->
+                      (ancestor:AWSECRRepositoryImage {guard0_org_id: $GUARD0_ORG_ID})
 WITH e1,
      CASE
          WHEN path IS NULL THEN [e1]
@@ -55,7 +60,11 @@ UNWIND repo_img_collection_unflattened AS repo_img
 WITH DISTINCT repo_img
 
 // Match image metadata
-MATCH (er:AWSECRRepository)-[:REPO_IMAGE]->(repo_img)-[:IMAGE]->(img:AWSECRImage)
+MATCH (er:AWSECRRepository {guard0_org_id: $GUARD0_ORG_ID})
+      -[:REPO_IMAGE {guard0_org_id: $GUARD0_ORG_ID}]->
+      (repo_img {guard0_org_id: $GUARD0_ORG_ID})
+      -[:IMAGE {guard0_org_id: $GUARD0_ORG_ID}]->
+      (img:AWSECRImage {guard0_org_id: $GUARD0_ORG_ID})
 
 RETURN DISTINCT
     er.region AS region,
@@ -65,5 +74,8 @@ RETURN DISTINCT
     img.digest AS digest
     """
     return neo4j_session.execute_read(
-        read_list_of_tuples_tx, query, AWS_ID=aws_account_id
+        read_list_of_tuples_tx,
+        query,
+        AWS_ID=aws_account_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )

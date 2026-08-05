@@ -123,13 +123,15 @@ def test_migrate_legacy_aws_labels_uses_one_scoped_write(mocker):
     run_write_query.assert_called_once()
     args, kwargs = run_write_query.call_args
     assert args[0] is neo4j_session
-    assert "MATCH (:AWSAccount{id: $AWS_ID})-[:RESOURCE]->(n)" in args[1]
+    assert "guard0_org_id: $GUARD0_ORG_ID" in args[1]
+    assert "id: $AWS_ID" in args[1]
+    assert "[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]" in args[1]
     assert "WHEN n:EC2Instance AND NOT n:AWSEC2Instance" in args[1]
     assert "SET n:AWSEC2Instance" in args[1]
     assert kwargs == {"AWS_ID": "123456789012"}
 
 
-def test_migrate_legacy_public_ssm_parameter_label_uses_global_write(mocker):
+def test_migrate_legacy_public_ssm_parameter_label_uses_tenant_scoped_write(mocker):
     neo4j_session = MagicMock()
     run_write_query = mocker.patch(
         "cartography.intel.aws.label_migrations.run_write_query"
@@ -140,6 +142,7 @@ def test_migrate_legacy_public_ssm_parameter_label_uses_global_write(mocker):
     run_write_query.assert_called_once()
     args, kwargs = run_write_query.call_args
     assert args[0] is neo4j_session
-    assert "MATCH (parameter:PublicSSMParameter)" in args[1]
+    assert "MATCH (parameter:PublicSSMParameter" in args[1]
+    assert "guard0_org_id: $GUARD0_ORG_ID" in args[1]
     assert "SET parameter:AWSPublicSSMParameter" in args[1]
     assert kwargs == {}

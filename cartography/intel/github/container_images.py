@@ -28,6 +28,7 @@ from cartography.models.github.container_image_layers import (
     GitHubContainerImageLayerSchema,
 )
 from cartography.models.github.container_images import GitHubContainerImageSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,9 @@ def _existing_digests_with_layers(
     drops from O(versions) to O(new versions).
     """
     query = """
-    MATCH (org:GitHubOrganization {id: $org_url})
-    MATCH (org)-[:RESOURCE]->(img:GitHubContainerImage)
+    MATCH (org:GitHubOrganization {guard0_org_id: $guard0_org_id, id: $org_url})
+    MATCH (org)-[:RESOURCE {guard0_org_id: $guard0_org_id}]->
+          (img:GitHubContainerImage {guard0_org_id: $guard0_org_id})
     WHERE img.layer_diff_ids IS NOT NULL AND size(img.layer_diff_ids) > 0
     RETURN img.digest
     """
@@ -66,6 +68,7 @@ def _existing_digests_with_layers(
         read_list_of_values_tx,
         query,
         org_url=org_url,
+        guard0_org_id=current_guard0_org_id(),
     )
     return {v for v in cast(list[str], values) if v}
 
@@ -442,17 +445,22 @@ def _refresh_skipped_image_lastupdated(
 
     # First pass: refresh image node, RESOURCE rels and image->layer rels.
     image_layer_query = """
-    MATCH (org:GitHubOrganization {id: $org_url})-[r_org:RESOURCE]->(img:GitHubContainerImage)
+    MATCH (org:GitHubOrganization {guard0_org_id: $guard0_org_id, id: $org_url})
+          -[r_org:RESOURCE {guard0_org_id: $guard0_org_id}]->
+          (img:GitHubContainerImage {guard0_org_id: $guard0_org_id})
     WHERE img.digest IN $digests
     SET img.lastupdated = $update_tag,
         r_org.lastupdated = $update_tag
     WITH org, img
-    OPTIONAL MATCH (img)-[r_layer:HAS_LAYER|HEAD|TAIL]->(layer:GitHubContainerImageLayer)
+    OPTIONAL MATCH (img)-[
+        r_layer:HAS_LAYER|HEAD|TAIL {guard0_org_id: $guard0_org_id}
+    ]->
+                   (layer:GitHubContainerImageLayer {guard0_org_id: $guard0_org_id})
     SET r_layer.lastupdated = $update_tag,
         layer.lastupdated = $update_tag
     WITH org, layer
     WHERE layer IS NOT NULL
-    OPTIONAL MATCH (org)-[r_layer_org:RESOURCE]->(layer)
+    OPTIONAL MATCH (org)-[r_layer_org:RESOURCE {guard0_org_id: $guard0_org_id}]->(layer)
     SET r_layer_org.lastupdated = $update_tag
     """
     neo4j_session.run(
@@ -460,6 +468,7 @@ def _refresh_skipped_image_lastupdated(
         digests=list(digests),
         org_url=org_url,
         update_tag=update_tag,
+        guard0_org_id=current_guard0_org_id(),
     )
 
     # Second pass: refresh the NEXT rels that chain the layers of any
@@ -467,11 +476,15 @@ def _refresh_skipped_image_lastupdated(
     # content hashes — without that constraint a digest collision across
     # orgs would update unrelated images' NEXT chains.
     next_rel_query = """
-    MATCH (org:GitHubOrganization {id: $org_url})-[:RESOURCE]->(img:GitHubContainerImage)
+    MATCH (org:GitHubOrganization {guard0_org_id: $guard0_org_id, id: $org_url})
+          -[:RESOURCE {guard0_org_id: $guard0_org_id}]->
+          (img:GitHubContainerImage {guard0_org_id: $guard0_org_id})
     WHERE img.digest IN $digests
-    MATCH (img)-[:HAS_LAYER]->(l1:GitHubContainerImageLayer)
-    MATCH (l1)-[r_next:NEXT]->(l2:GitHubContainerImageLayer)
-    WHERE (img)-[:HAS_LAYER]->(l2)
+    MATCH (img)-[:HAS_LAYER {guard0_org_id: $guard0_org_id}]->
+          (l1:GitHubContainerImageLayer {guard0_org_id: $guard0_org_id})
+    MATCH (l1)-[r_next:NEXT {guard0_org_id: $guard0_org_id}]->
+          (l2:GitHubContainerImageLayer {guard0_org_id: $guard0_org_id})
+    WHERE (img)-[:HAS_LAYER {guard0_org_id: $guard0_org_id}]->(l2)
     SET r_next.lastupdated = $update_tag
     """
     neo4j_session.run(
@@ -479,6 +492,7 @@ def _refresh_skipped_image_lastupdated(
         digests=list(digests),
         org_url=org_url,
         update_tag=update_tag,
+        guard0_org_id=current_guard0_org_id(),
     )
 
 

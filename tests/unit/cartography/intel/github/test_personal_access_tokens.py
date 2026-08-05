@@ -7,6 +7,9 @@ from cartography.intel.github.personal_access_tokens import (
 from cartography.intel.github.personal_access_tokens import (
     _transform_saml_credential_authorization,
 )
+from cartography.intel.github.personal_access_tokens import (
+    cleanup_personal_access_tokens,
+)
 from tests.data.github.personal_access_tokens import FINE_GRAINED_PERSONAL_ACCESS_TOKENS
 from tests.data.github.personal_access_tokens import SAML_CREDENTIAL_AUTHORIZATIONS
 
@@ -15,6 +18,26 @@ ORG_URL = "https://github.com/simpsoncorp"
 
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def test_cleanup_personal_access_tokens_passes_tenant_parameter(mocker):
+    from_node_schema = mocker.patch(
+        "cartography.intel.github.personal_access_tokens.GraphJob.from_node_schema",
+    )
+
+    cleanup_personal_access_tokens(
+        mocker.Mock(),
+        ORG_URL,
+        123,
+        "guard0-org",
+    )
+
+    assert from_node_schema.call_args.args[1] == {
+        "UPDATE_TAG": 123,
+        "org_url": ORG_URL,
+        "GUARD0_ORG_ID": "guard0-org",
+    }
+    from_node_schema.return_value.run.assert_called_once()
 
 
 def test_transform_fine_grained_pat_serializes_metadata_without_token_values():

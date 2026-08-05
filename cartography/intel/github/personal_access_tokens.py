@@ -289,10 +289,15 @@ def cleanup_personal_access_tokens(
     neo4j_session: neo4j.Session,
     org_url: str,
     update_tag: int,
+    guard0_org_id: str,
 ) -> None:
     GraphJob.from_node_schema(
         GitHubPersonalAccessTokenSchema(),
-        {"UPDATE_TAG": update_tag, "org_url": org_url},
+        {
+            "UPDATE_TAG": update_tag,
+            "org_url": org_url,
+            "GUARD0_ORG_ID": guard0_org_id,
+        },
     ).run(neo4j_session)
 
 
@@ -316,4 +321,5 @@ def sync(
         neo4j_session,
         org_url,
         common_job_parameters["UPDATE_TAG"],
+        common_job_parameters["GUARD0_ORG_ID"],
     )

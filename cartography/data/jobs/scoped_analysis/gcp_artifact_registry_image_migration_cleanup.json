@@ -4,13 +4,13 @@
   "statements": [
     {
       "__comment__": "Delete remaining pure legacy scoped container-image nodes.",
-      "query": "MATCH (old:GCPArtifactRegistryContainerImage) WHERE NOT old:GCPArtifactRegistryRepositoryImage AND NOT old:GCPArtifactRegistryImage WITH old LIMIT $LIMIT_SIZE DETACH DELETE old RETURN COUNT(*) AS TotalCompleted",
+      "query": "MATCH (old:GCPArtifactRegistryContainerImage {guard0_org_id: $GUARD0_ORG_ID}) WHERE NOT old:GCPArtifactRegistryRepositoryImage AND NOT old:GCPArtifactRegistryImage WITH old LIMIT $LIMIT_SIZE DETACH DELETE old RETURN COUNT(*) AS TotalCompleted",
       "iterative": true,
       "iterationsize": 1000
     },
     {
       "__comment__": "Delete remaining pure legacy platform-image nodes.",
-      "query": "MATCH (old:GCPArtifactRegistryPlatformImage) WHERE NOT old:GCPArtifactRegistryImage WITH old LIMIT $LIMIT_SIZE DETACH DELETE old RETURN COUNT(*) AS TotalCompleted",
+      "query": "MATCH (old:GCPArtifactRegistryPlatformImage {guard0_org_id: $GUARD0_ORG_ID}) WHERE NOT old:GCPArtifactRegistryImage WITH old LIMIT $LIMIT_SIZE DETACH DELETE old RETURN COUNT(*) AS TotalCompleted",
       "iterative": true,
       "iterationsize": 1000
     }

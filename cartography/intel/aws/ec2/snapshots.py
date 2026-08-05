@@ -12,6 +12,7 @@ from cartography.client.core.tx import read_list_of_values_tx
 from cartography.graph.job import GraphJob
 from cartography.intel.aws.util.botocore_config import create_boto3_client
 from cartography.models.aws.ec2.snapshots import EBSSnapshotSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import timeit
 
@@ -37,7 +38,9 @@ def get_snapshots_in_use(
     current_aws_account_id: str,
 ) -> List[str]:
     query = """
-    MATCH (:AWSAccount{id: $AWS_ACCOUNT_ID})-[:RESOURCE]->(v:AWSEBSVolume)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ACCOUNT_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (v:AWSEBSVolume {guard0_org_id: $GUARD0_ORG_ID})
     WHERE v.region = $Region
     RETURN v.snapshotid as snapshot
     """
@@ -46,6 +49,7 @@ def get_snapshots_in_use(
         query,
         AWS_ACCOUNT_ID=current_aws_account_id,
         Region=region,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
     return [str(snapshot) for snapshot in results if snapshot]
 

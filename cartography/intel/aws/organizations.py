@@ -19,6 +19,7 @@ from cartography.models.aws.account import AWSOrganizationAccountSchema
 from cartography.models.aws.organization import AWSOrganizationalUnitSchema
 from cartography.models.aws.organization import AWSOrganizationRootSchema
 from cartography.models.aws.organization import AWSOrganizationSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
@@ -519,10 +520,15 @@ def get_existing_aws_organization_root_ids(
         record["root_id"]
         for record in neo4j_session.run(
             """
-            MATCH (:AWSOrganization {id: $ORG_ID})-[:RESOURCE]->(root:AWSOrganizationRoot)
+            MATCH (:AWSOrganization {
+                guard0_org_id: $GUARD0_ORG_ID,
+                id: $ORG_ID
+            })-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+              (root:AWSOrganizationRoot {guard0_org_id: $GUARD0_ORG_ID})
             RETURN root.id AS root_id
             """,
             ORG_ID=organization_id,
+            GUARD0_ORG_ID=current_guard0_org_id(),
         )
     ]
 
@@ -533,6 +539,7 @@ def cleanup_aws_organization_hierarchy(
     organization_id: str,
     root_ids: Iterable[str],
 ) -> None:
+    guard0_org_id = current_guard0_org_id()
     root_ids_to_cleanup = set(root_ids)
     root_ids_to_cleanup.update(
         get_existing_aws_organization_root_ids(
@@ -543,11 +550,19 @@ def cleanup_aws_organization_hierarchy(
     for root_id in sorted(root_ids_to_cleanup):
         GraphJob.from_node_schema(
             AWSOrganizationalUnitSchema(),
-            {"UPDATE_TAG": update_tag, "ROOT_ID": root_id},
+            {
+                "UPDATE_TAG": update_tag,
+                "ROOT_ID": root_id,
+                "GUARD0_ORG_ID": guard0_org_id,
+            },
         ).run(neo4j_session)
     GraphJob.from_node_schema(
         AWSOrganizationRootSchema(),
-        {"UPDATE_TAG": update_tag, "ORG_ID": organization_id},
+        {
+            "UPDATE_TAG": update_tag,
+            "ORG_ID": organization_id,
+            "GUARD0_ORG_ID": guard0_org_id,
+        },
     ).run(neo4j_session)
 
 
@@ -560,7 +575,10 @@ def cleanup_stale_aws_account_organization_metadata(
     run_write_query(
         neo4j_session,
         """
-        MATCH (account:AWSAccount {org_id: $ORG_ID})
+        MATCH (account:AWSAccount {
+            guard0_org_id: $GUARD0_ORG_ID,
+            org_id: $ORG_ID
+        })
         WHERE NOT account.id IN $CURRENT_ACCOUNT_IDS
         SET account.arn = null,
             account.email = null,

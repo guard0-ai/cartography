@@ -13,6 +13,7 @@ from cartography.graph.job import GraphJob
 from cartography.intel.aws.util.botocore_config import create_boto3_client
 from cartography.intel.aws.util.botocore_config import get_botocore_config
 from cartography.models.aws.ec2.images import EC2ImageSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import timeit
 
@@ -27,15 +28,21 @@ def get_images_in_use(
 ) -> List[str]:
     get_images_query = """
     CALL {
-    MATCH (:AWSAccount{id: $AWS_ACCOUNT_ID})-[:RESOURCE]->(i:AWSEC2Instance)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ACCOUNT_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (i:AWSEC2Instance {guard0_org_id: $GUARD0_ORG_ID})
     WHERE i.region = $Region AND i.imageid IS NOT NULL
     RETURN i.imageid AS image
     UNION ALL
-    MATCH (:AWSAccount{id: $AWS_ACCOUNT_ID})-[:RESOURCE]->(lc:AWSLaunchConfiguration)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ACCOUNT_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (lc:AWSLaunchConfiguration {guard0_org_id: $GUARD0_ORG_ID})
     WHERE lc.region = $Region AND lc.image_id IS NOT NULL
     RETURN lc.image_id AS image
     UNION ALL
-    MATCH (:AWSAccount{id: $AWS_ACCOUNT_ID})-[:RESOURCE]->(ltv:AWSLaunchTemplateVersion)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ACCOUNT_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (ltv:AWSLaunchTemplateVersion {guard0_org_id: $GUARD0_ORG_ID})
     WHERE ltv.region = $Region AND ltv.image_id IS NOT NULL
     RETURN ltv.image_id AS image
     }
@@ -46,6 +53,7 @@ def get_images_in_use(
         get_images_query,
         AWS_ACCOUNT_ID=current_aws_account_id,
         Region=region,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
     images = [str(image) for image in result]
     return images

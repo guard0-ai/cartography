@@ -62,7 +62,9 @@ def _migrate_legacy_loadbalancer_labels(
     run_write_query(
         neo4j_session,
         """
-        MATCH (:AWSAccount{id: $AWS_ID})-[:RESOURCE]->(n:LoadBalancer)
+        MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
+              -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+              (n:LoadBalancer {guard0_org_id: $GUARD0_ORG_ID})
         WHERE NOT n:AWSLoadBalancer
           AND NOT n:LoadBalancerV2
           AND NOT n:AWSLoadBalancerV2

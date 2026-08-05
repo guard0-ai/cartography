@@ -21,8 +21,9 @@ def test_github_label_migration_is_scoped(mocker):
     )
 
     query, kwargs = _query_and_kwargs(run_write_query)
-    assert "org:GitHubOrganization{id: $owner_org_id}" in query
-    assert "manifest:DependencyGraphManifest" in query
+    assert "guard0_org_id: $GUARD0_ORG_ID" in query
+    assert "id: $owner_org_id" in query
+    assert "manifest:DependencyGraphManifest{" in query
     assert "SET manifest:GitHubDependencyGraphManifest" in query
     assert kwargs == {"owner_org_id": "https://github.com/acme"}
 

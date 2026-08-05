@@ -28,6 +28,7 @@ from cartography.graph.analysisbuilder import properties_set
 from cartography.graph.analysisbuilder import relationships_added
 from cartography.graph.analysisbuilder import to_graph_job
 from cartography.graph.job import GraphJob
+from cartography.tenancy import guard0_tenant_scope
 from tests.unit.cartography.graph.helpers import clean_query_list
 
 MUTATING_CYPHER_RE = re.compile(
@@ -92,6 +93,17 @@ def test_typed_analysis_jobs_declare_effects_and_keep_match_queries_read_only():
                 assert f"${job.scope.id_param}" not in statement.match, (
                     f"{job.short_name or job.name} statement {index} inlines "
                     "its declared scope."
+                )
+
+
+def test_all_typed_analysis_jobs_compile_with_guard0_tenant_scope():
+    with guard0_tenant_scope("guard0-org"):
+        for job in _analysis_jobs():
+            graph_job = to_graph_job(job)
+            for statement in graph_job.statements:
+                assert "$GUARD0_ORG_ID" in statement.query, (
+                    f"{job.short_name or job.name} emitted an unscoped statement: "
+                    f"{statement.query}"
                 )
 
 

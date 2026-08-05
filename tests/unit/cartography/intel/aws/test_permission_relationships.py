@@ -634,8 +634,9 @@ def test_build_target_precondition_clause_outgoing():
         },
     )
     assert (
-        clause
-        == "AND EXISTS { MATCH (resource)-[:HAS_INFORMATION]->(:AWSSSMInstanceInformation) }"
+        clause == "AND EXISTS { MATCH (resource)-[:HAS_INFORMATION "
+        "{guard0_org_id: $GUARD0_ORG_ID}]->"
+        "(:AWSSSMInstanceInformation {guard0_org_id: $GUARD0_ORG_ID}) }"
     )
 
 
@@ -646,7 +647,10 @@ def test_build_target_precondition_clause_defaults_to_outgoing():
             "relationship": "HAS_INFORMATION",
         },
     )
-    assert "(resource)-[:HAS_INFORMATION]->(:AWSSSMInstanceInformation)" in clause
+    assert (
+        "(resource)-[:HAS_INFORMATION {guard0_org_id: $GUARD0_ORG_ID}]->"
+        "(:AWSSSMInstanceInformation {guard0_org_id: $GUARD0_ORG_ID})" in clause
+    )
 
 
 def test_build_target_precondition_clause_incoming():
@@ -657,7 +661,11 @@ def test_build_target_precondition_clause_incoming():
             "direction": "incoming",
         },
     )
-    assert clause == "AND EXISTS { MATCH (resource)<-[:POINTS_TO]-(:SomeNode) }"
+    assert (
+        clause == "AND EXISTS { MATCH (resource)<-[:POINTS_TO "
+        "{guard0_org_id: $GUARD0_ORG_ID}]-"
+        "(:SomeNode {guard0_org_id: $GUARD0_ORG_ID}) }"
+    )
 
 
 def test_build_target_precondition_clause_rejects_invalid_direction():

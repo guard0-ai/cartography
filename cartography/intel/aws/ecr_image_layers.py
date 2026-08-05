@@ -32,6 +32,7 @@ from cartography.models.aws.ecr.image_layer import ECRImageLayerNextRelSchema
 from cartography.models.aws.ecr.image_layer import ECRImageLayerNodeSchema
 from cartography.models.aws.ecr.image_layer import ECRImageLayerSchema
 from cartography.models.aws.ecr.image_layer import ECRImageLayerTailRelSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
@@ -1312,8 +1313,13 @@ def sync(
 
         # Query for ECR images with all their existing properties to preserve during layer sync
         query = """
-        MATCH (img:AWSECRImage)<-[:IMAGE]-(repo_img:AWSECRRepositoryImage)<-[:REPO_IMAGE]-(repo:AWSECRRepository)
-        MATCH (repo)<-[:RESOURCE]-(:AWSAccount {id: $AWS_ID})
+        MATCH (img:AWSECRImage {guard0_org_id: $GUARD0_ORG_ID})
+              <-[:IMAGE {guard0_org_id: $GUARD0_ORG_ID}]-
+              (repo_img:AWSECRRepositoryImage {guard0_org_id: $GUARD0_ORG_ID})
+              <-[:REPO_IMAGE {guard0_org_id: $GUARD0_ORG_ID}]-
+              (repo:AWSECRRepository {guard0_org_id: $GUARD0_ORG_ID})
+        MATCH (repo)<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-
+              (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
         WHERE repo.region = $Region
         RETURN DISTINCT
             img.digest AS digest,
@@ -1332,7 +1338,11 @@ def sync(
         from cartography.client.core.tx import read_list_of_dicts_tx
 
         ecr_images = neo4j_session.execute_read(
-            read_list_of_dicts_tx, query, AWS_ID=current_aws_account_id, Region=region
+            read_list_of_dicts_tx,
+            query,
+            AWS_ID=current_aws_account_id,
+            Region=region,
+            GUARD0_ORG_ID=current_guard0_org_id(),
         )
 
         # Build repo_images_list and existing_properties map

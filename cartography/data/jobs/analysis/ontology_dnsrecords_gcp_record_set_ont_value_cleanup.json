@@ -3,7 +3,7 @@
   "statements": [
     {
       "__comment": "Remove transient _ont_value values from GCPRecordSet nodes; DNSRecord semantic value is modeled by data ingestion, not typed analysis effects.",
-      "query": "MATCH (n:GCPRecordSet) WHERE n._ont_value IS NOT NULL REMOVE n._ont_value",
+      "query": "MATCH (n:GCPRecordSet {guard0_org_id: $GUARD0_ORG_ID}) WHERE n._ont_value IS NOT NULL REMOVE n._ont_value",
       "iterative": false
     }
   ]

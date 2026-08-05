@@ -67,7 +67,8 @@ def test_build_ingest_tag_query_region_scoped():
     ingest query must be scoped to the synced region (#1137).
     """
     query = rgta._build_ingest_tag_query("elasticloadbalancing:loadbalancer")
-    assert "WHERE resource.region = $Region" in query
+    assert "AND resource.region = $Region" in query
+    assert "guard0_org_id: $GUARD0_ORG_ID" in query
     # The tag node itself no longer stores region (#1094).
     assert "aws_tag.region" not in query
 

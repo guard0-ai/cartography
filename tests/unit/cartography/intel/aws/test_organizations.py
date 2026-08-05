@@ -264,6 +264,50 @@ def test_sync_aws_organization_returns_already_synced_result():
     mock_get_hierarchy.assert_not_called()
 
 
+def test_cleanup_aws_organization_hierarchy_scopes_graph_jobs_to_guard0_org():
+    neo4j_session = mock.Mock()
+    cleanup_job = mock.Mock()
+
+    with (
+        mock.patch.object(
+            cartography.intel.aws.organizations,
+            "current_guard0_org_id",
+            return_value="guard0-org",
+        ),
+        mock.patch.object(
+            cartography.intel.aws.organizations,
+            "get_existing_aws_organization_root_ids",
+            return_value=[],
+        ),
+        mock.patch.object(
+            cartography.intel.aws.organizations.GraphJob,
+            "from_node_schema",
+            return_value=cleanup_job,
+        ) as mock_from_node_schema,
+    ):
+        cartography.intel.aws.organizations.cleanup_aws_organization_hierarchy(
+            neo4j_session,
+            123,
+            "o-exampleorgid",
+            ["o-exampleorgid:r-example"],
+        )
+
+    assert mock_from_node_schema.call_args_list[0].args[1] == {
+        "UPDATE_TAG": 123,
+        "ROOT_ID": "o-exampleorgid:r-example",
+        "GUARD0_ORG_ID": "guard0-org",
+    }
+    assert mock_from_node_schema.call_args_list[1].args[1] == {
+        "UPDATE_TAG": 123,
+        "ORG_ID": "o-exampleorgid",
+        "GUARD0_ORG_ID": "guard0-org",
+    }
+    assert cleanup_job.run.call_args_list == [
+        mock.call(neo4j_session),
+        mock.call(neo4j_session),
+    ]
+
+
 def test_sync_aws_organization_second_call_returns_already_synced_result():
     # Arrange
     class FakeClient:

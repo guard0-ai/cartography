@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any
 from typing import Dict
@@ -11,6 +12,9 @@ import neo4j
 
 from cartography.client.core.tx import execute_write_with_retry
 from cartography.stats import get_stats_client
+from cartography.tenancy import add_guard0_org_parameter
+from cartography.tenancy import GUARD0_ORG_PARAMETER
+from cartography.tenancy import guard0_scope_required
 
 logger = logging.getLogger(__name__)
 stat_handler = get_stats_client(__name__)
@@ -203,10 +207,18 @@ class GraphStatement:
             the query returns no updates (summary.counters.contains_updates is False).
             Completion is logged with the parent job name and sequence number.
         """
+        if guard0_scope_required() and f"${GUARD0_ORG_PARAMETER}" not in self.query:
+            raise ValueError(
+                "raw GraphJob query is missing explicit guard0 organization scoping"
+            )
+        parameters = add_guard0_org_parameter(self.parameters)
         if self.iterative:
-            self._run_iterative(session)
+            self._run_iterative(session, parameters)
         else:
-            execute_write_with_retry(session, self._run_noniterative)
+            execute_write_with_retry(
+                session,
+                partial(self._run_noniterative, parameters=parameters),
+            )
 
         logger.info(
             "Completed %s statement #%s",
@@ -255,7 +267,11 @@ class GraphStatement:
             "iterationsize": self.iterationsize,
         }
 
-    def _run_noniterative(self, tx: neo4j.Transaction) -> neo4j.ResultSummary:
+    def _run_noniterative(
+        self,
+        tx: neo4j.Transaction,
+        parameters: Dict[Any, Any],
+    ) -> neo4j.ResultSummary:
         """
         Execute a non-iterative statement within a transaction.
 
@@ -276,7 +292,7 @@ class GraphStatement:
             and tracking purposes. The result is consumed within the transaction to ensure
             proper resource management.
         """
-        result: neo4j.Result = tx.run(self.query, self.parameters)
+        result: neo4j.Result = tx.run(self.query, parameters)
 
         # Ensure we consume the result inside the transaction
         summary: neo4j.ResultSummary = result.consume()
@@ -300,7 +316,11 @@ class GraphStatement:
 
         return summary
 
-    def _run_iterative(self, session: neo4j.Session) -> None:
+    def _run_iterative(
+        self,
+        session: neo4j.Session,
+        parameters: Dict[Any, Any],
+    ) -> None:
         """
         Execute an iterative statement in chunks until no more updates are made.
 
@@ -316,12 +336,12 @@ class GraphStatement:
             returns False, indicating no more records were modified. The LIMIT_SIZE
             parameter is automatically set to the iterationsize value.
         """
-        self.parameters["LIMIT_SIZE"] = self.iterationsize
+        parameters["LIMIT_SIZE"] = self.iterationsize
 
         while True:
             summary: neo4j.ResultSummary = execute_write_with_retry(
                 session,
-                self._run_noniterative,
+                partial(self._run_noniterative, parameters=parameters),
             )
 
             if not summary.counters.contains_updates:

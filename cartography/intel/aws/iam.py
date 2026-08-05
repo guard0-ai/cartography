@@ -39,6 +39,7 @@ from cartography.models.aws.iam.service_principal import AWSServicePrincipalSche
 from cartography.models.aws.iam.sts_assumerole_allow import STSAssumeRoleAllowMatchLink
 from cartography.models.aws.iam.user import AWSUserSchema
 from cartography.stats import get_stats_client
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import merge_module_sync_metadata
 from cartography.util import timeit
@@ -478,9 +479,13 @@ def get_policies_for_principal(
 ) -> Dict:
     get_policy_query = """
     MATCH
-    (principal:AWSPrincipal{arn:$Arn})-[:POLICY]->
-    (policy:AWSPolicy)-[:STATEMENT]->
-    (statements:AWSPolicyStatement)
+    (principal:AWSPrincipal {
+        guard0_org_id: $GUARD0_ORG_ID,
+        arn: $Arn
+    })-[:POLICY {guard0_org_id: $GUARD0_ORG_ID}]->
+    (policy:AWSPolicy {guard0_org_id: $GUARD0_ORG_ID})
+    -[:STATEMENT {guard0_org_id: $GUARD0_ORG_ID}]->
+    (statements:AWSPolicyStatement {guard0_org_id: $GUARD0_ORG_ID})
     RETURN
     DISTINCT policy.id AS policy_id,
     COLLECT(DISTINCT statements) AS statements
@@ -489,6 +494,7 @@ def get_policies_for_principal(
         read_list_of_dicts_tx,
         get_policy_query,
         Arn=principal_arn,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
     policies = {r["policy_id"]: r["statements"] for r in results}
     return policies
@@ -714,7 +720,11 @@ def sync_assumerole_relationships(
         current_aws_account_id,
     )
     query_potential_matches = """
-    MATCH (:AWSAccount{id:$AccountId})-[:RESOURCE]->(target:AWSRole)-[:TRUSTS_AWS_PRINCIPAL]->(source:AWSPrincipal)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AccountId})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (target:AWSRole {guard0_org_id: $GUARD0_ORG_ID})
+          -[:TRUSTS_AWS_PRINCIPAL {guard0_org_id: $GUARD0_ORG_ID}]->
+          (source:AWSPrincipal {guard0_org_id: $GUARD0_ORG_ID})
     WHERE NOT source:AWSRootPrincipal
     AND NOT source:AWSServicePrincipal
     AND NOT source:AWSFederatedPrincipal
@@ -724,6 +734,7 @@ def sync_assumerole_relationships(
         read_list_of_dicts_tx,
         query_potential_matches,
         AccountId=current_aws_account_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
 
     # Filter potential matches to only those where the source principal has sts:AssumeRole permission
@@ -995,13 +1006,16 @@ def sync_user_access_keys(
 
     # Query the graph for users instead of making another AWS API call
     query = (
-        "MATCH (user:AWSUser)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID}) "
+        "MATCH (user:AWSUser {guard0_org_id: $GUARD0_ORG_ID})"
+        "<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-"
+        "(:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID}) "
         "RETURN user.name as name, user.arn as arn"
     )
     users = neo4j_session.execute_read(
         read_list_of_dicts_tx,
         query,
         AWS_ID=current_aws_account_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
 
     user_access_keys = get_user_access_keys_data(boto3_session, users)
@@ -1466,7 +1480,9 @@ def _get_policies_in_current_account(
     neo4j_session: neo4j.Session, current_aws_account_id: str
 ) -> list[str]:
     query = """
-    MATCH (:AWSAccount{id: $AWS_ID})-[:RESOURCE]->(p:AWSPolicy)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (p:AWSPolicy {guard0_org_id: $GUARD0_ORG_ID})
     RETURN p.id
     """
     return [
@@ -1475,6 +1491,7 @@ def _get_policies_in_current_account(
             read_list_of_values_tx,
             query,
             AWS_ID=current_aws_account_id,
+            GUARD0_ORG_ID=current_guard0_org_id(),
         )
     ]
 
@@ -1483,8 +1500,11 @@ def _get_principals_with_pols_in_current_account(
     neo4j_session: neo4j.Session, current_aws_account_id: str
 ) -> list[str]:
     query = """
-    MATCH (:AWSAccount{id: $AWS_ID})-[:RESOURCE]->(p:AWSPrincipal)
-    WHERE (p)-[:POLICY]->(:AWSPolicy)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+          (p:AWSPrincipal {guard0_org_id: $GUARD0_ORG_ID})
+    WHERE (p)-[:POLICY {guard0_org_id: $GUARD0_ORG_ID}]->
+          (:AWSPolicy {guard0_org_id: $GUARD0_ORG_ID})
     RETURN p.id
     """
     return [
@@ -1493,6 +1513,7 @@ def _get_principals_with_pols_in_current_account(
             read_list_of_values_tx,
             query,
             AWS_ID=current_aws_account_id,
+            GUARD0_ORG_ID=current_guard0_org_id(),
         )
     ]
 
@@ -1701,12 +1722,20 @@ def sync_service_last_accessed_details(
     )
 
     principals_query = """
-    MATCH (account:AWSAccount{id: $AWS_ACCOUNT_ID})-[:RESOURCE]->(principal)
+    MATCH (account:AWSAccount {
+        guard0_org_id: $GUARD0_ORG_ID,
+        id: $AWS_ACCOUNT_ID
+    })-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+      (principal {guard0_org_id: $GUARD0_ORG_ID})
     WHERE principal:AWSUser OR principal:AWSRole OR principal:AWSGroup
     RETURN principal.arn as arn
     """
 
-    results = neo4j_session.run(principals_query, AWS_ACCOUNT_ID=current_aws_account_id)
+    results = neo4j_session.run(
+        principals_query,
+        AWS_ACCOUNT_ID=current_aws_account_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
+    )
     principal_arns = [record["arn"] for record in results]
 
     logger.info(

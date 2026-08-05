@@ -151,7 +151,11 @@ def build_aws_label_migration_query(
         for migration in migrations
     )
     return f"""
-    MATCH (:AWSAccount{{id: $AWS_ID}})-[:RESOURCE]->(n)
+    MATCH (:AWSAccount {{
+        guard0_org_id: $GUARD0_ORG_ID,
+        id: $AWS_ID
+    }})-[:RESOURCE {{guard0_org_id: $GUARD0_ORG_ID}}]->
+      (n {{guard0_org_id: $GUARD0_ORG_ID}})
     WITH DISTINCT n
     {migration_clauses}
     """
@@ -177,7 +181,9 @@ def migrate_legacy_public_ssm_parameter_label(
     run_write_query(
         neo4j_session,
         """
-        MATCH (parameter:PublicSSMParameter)
+        MATCH (parameter:PublicSSMParameter {
+            guard0_org_id: $GUARD0_ORG_ID
+        })
         WHERE NOT parameter:AWSPublicSSMParameter
         SET parameter:AWSPublicSSMParameter
         """,

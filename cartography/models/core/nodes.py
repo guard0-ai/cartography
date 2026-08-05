@@ -228,6 +228,11 @@ class CartographyNodeSchema(abc.ABC):
         return None
 
     @property
+    def enforce_tenant_identity_uniqueness(self) -> bool:
+        """Whether this schema owns the tenant-scoped identity for its label."""
+        return True
+
+    @property
     def scoped_cleanup(self) -> bool:
         """
         Whether cleanups of this node must be scoped to the sub resource relationship.

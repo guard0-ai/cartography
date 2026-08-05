@@ -15,6 +15,7 @@ from cartography.models.aws.route53.dnsrecord import AWSDNSRecordSchema
 from cartography.models.aws.route53.nameserver import NameServerSchema
 from cartography.models.aws.route53.subzone import AWSDNSZoneSubzoneMatchLink
 from cartography.models.aws.route53.zone import AWSDNSZoneSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import timeit
 
@@ -445,16 +446,25 @@ def link_sub_zones(
     isn't known ahead of time.
     """
     query = """
-    MATCH (:AWSAccount{id: $AWS_ID})-[:RESOURCE]->(z:AWSDNSZone)
-        <-[:MEMBER_OF_DNS_ZONE]-(record:DNSRecord{type:"NS"})
-        -[:DNS_POINTS_TO]->(ns:AWSNameServer)<-[:NAMESERVER]-(z2:AWSDNSZone)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
+        -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+        (z:AWSDNSZone {guard0_org_id: $GUARD0_ORG_ID})
+        <-[:MEMBER_OF_DNS_ZONE {guard0_org_id: $GUARD0_ORG_ID}]-
+        (record:DNSRecord {guard0_org_id: $GUARD0_ORG_ID, type:"NS"})
+        -[:DNS_POINTS_TO {guard0_org_id: $GUARD0_ORG_ID}]->
+        (ns:AWSNameServer {guard0_org_id: $GUARD0_ORG_ID})
+        <-[:NAMESERVER {guard0_org_id: $GUARD0_ORG_ID}]-
+        (z2:AWSDNSZone {guard0_org_id: $GUARD0_ORG_ID})
         WHERE record.name = z2.name AND
         z2.name ENDS WITH '.' + z.name AND
         NOT z = z2
     RETURN z.id as zone_id, z2.id as subzone_id
     """
     zone_to_subzone = neo4j_session.execute_read(
-        read_list_of_dicts_tx, query, AWS_ID=current_aws_id
+        read_list_of_dicts_tx,
+        query,
+        AWS_ID=current_aws_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
     load_matchlinks(
         neo4j_session,

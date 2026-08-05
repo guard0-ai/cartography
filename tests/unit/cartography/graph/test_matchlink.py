@@ -397,9 +397,9 @@ def test_build_create_index_queries_for_matchlink():
     index_queries = build_create_index_queries_for_matchlink(rel_schema)
 
     expected_queries = {
-        "CREATE INDEX IF NOT EXISTS FOR (n:AWSPrincipal) ON (n.principal_arn);",
-        "CREATE INDEX IF NOT EXISTS FOR (n:AWSS3Bucket) ON (n.name);",
-        "CREATE INDEX IF NOT EXISTS FOR ()-[r:CAN_ACCESS]->() ON (r._sub_resource_label, r._sub_resource_id, r.lastupdated);",
+        "CREATE INDEX IF NOT EXISTS FOR (n:AWSPrincipal) ON (n.guard0_org_id, n.principal_arn);",
+        "CREATE INDEX IF NOT EXISTS FOR (n:AWSS3Bucket) ON (n.guard0_org_id, n.name);",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:CAN_ACCESS]->() ON (r.guard0_org_id, r._sub_resource_label, r._sub_resource_id, r.lastupdated);",
     }
 
     # Assert: compare the list of index queries
@@ -411,10 +411,10 @@ def test_build_create_index_queries_for_scoped_matchlink():
     index_queries = build_create_index_queries_for_matchlink(rel_schema)
 
     expected_queries = {
-        "CREATE INDEX IF NOT EXISTS FOR (n:AWSPrincipal) ON (n.principal_arn);",
-        "CREATE INDEX IF NOT EXISTS FOR (n:AWSS3Bucket) ON (n.name);",
-        "CREATE INDEX IF NOT EXISTS FOR (n:AWSAccount) ON (n.id);",
-        "CREATE INDEX IF NOT EXISTS FOR ()-[r:CAN_ACCESS]->() ON (r._sub_resource_label, r._sub_resource_id, r.lastupdated);",
+        "CREATE INDEX IF NOT EXISTS FOR (n:AWSPrincipal) ON (n.guard0_org_id, n.principal_arn);",
+        "CREATE INDEX IF NOT EXISTS FOR (n:AWSS3Bucket) ON (n.guard0_org_id, n.name);",
+        "CREATE INDEX IF NOT EXISTS FOR (n:AWSAccount) ON (n.guard0_org_id, n.id);",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:CAN_ACCESS]->() ON (r.guard0_org_id, r._sub_resource_label, r._sub_resource_id, r.lastupdated);",
     }
 
     assert set(index_queries) == expected_queries

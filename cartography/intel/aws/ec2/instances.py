@@ -30,6 +30,7 @@ from cartography.models.aws.ec2.securitygroup_instance import (
 )
 from cartography.models.aws.ec2.subnet_instance import EC2SubnetInstanceSchema
 from cartography.models.aws.ec2.volumes import EBSVolumeInstanceSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import timeit
 
@@ -525,14 +526,23 @@ def sync_ec2_instance_assumes_role(
     # the canonical ASSUMES ontology edge. Scoped to the current account so the
     # MatchLink cleanup only touches this account's edges.
     query = """
-    MATCH (:AWSAccount{id: $AccountId})-[:RESOURCE]->(i:AWSEC2Instance)
-        -[:INSTANCE_PROFILE]->(:AWSInstanceProfile)-[:ASSOCIATED_WITH]->(r:AWSRole)
+    MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AccountId})
+        -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+        (i:AWSEC2Instance {guard0_org_id: $GUARD0_ORG_ID})
+        -[:INSTANCE_PROFILE {guard0_org_id: $GUARD0_ORG_ID}]->
+        (:AWSInstanceProfile {guard0_org_id: $GUARD0_ORG_ID})
+        -[:ASSOCIATED_WITH {guard0_org_id: $GUARD0_ORG_ID}]->
+        (r:AWSRole {guard0_org_id: $GUARD0_ORG_ID})
     WHERE i.id IS NOT NULL AND r.arn IS NOT NULL
     RETURN i.id AS instance_id, r.arn AS role_arn
     """
     pairs = [
         {"instance_id": record["instance_id"], "role_arn": record["role_arn"]}
-        for record in neo4j_session.run(query, AccountId=current_aws_account_id)
+        for record in neo4j_session.run(
+            query,
+            AccountId=current_aws_account_id,
+            GUARD0_ORG_ID=current_guard0_org_id(),
+        )
     ]
 
     load_matchlinks(

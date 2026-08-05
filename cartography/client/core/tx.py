@@ -25,6 +25,9 @@ from cartography.helpers import batch
 from cartography.models.core.nodes import CartographyNodeSchema
 from cartography.models.core.relationships import CartographyRelSchema
 from cartography.stats import get_stats_client
+from cartography.tenancy import add_guard0_org_parameter
+from cartography.tenancy import GUARD0_ORG_PARAMETER
+from cartography.tenancy import guard0_scope_required
 
 logger = logging.getLogger(__name__)
 stat_handler = get_stats_client(__name__)
@@ -355,6 +358,20 @@ def run_write_query(
     :param parameters: Parameters to pass to the query
     :return: None
     """
+
+    normalized_query = query.lstrip().upper()
+    tenant_neutral_schema_write = normalized_query.startswith(
+        ("CREATE INDEX", "CREATE CONSTRAINT")
+    )
+    if (
+        guard0_scope_required()
+        and not tenant_neutral_schema_write
+        and f"${GUARD0_ORG_PARAMETER}" not in query
+    ):
+        raise ValueError(
+            "raw Cypher write is missing explicit guard0 organization scoping"
+        )
+    parameters = add_guard0_org_parameter(parameters)
 
     def _run_query_tx(tx: neo4j.Transaction) -> None:
         tx.run(query, **parameters).consume()
@@ -688,6 +705,7 @@ def load_graph_data(
     if batch_size <= 0:
         raise ValueError(f"batch_size must be greater than 0, got {batch_size}")
 
+    kwargs = add_guard0_org_parameter(kwargs)
     for data_batch in batch(dict_list, size=batch_size):
         execute_write_with_retry(
             neo4j_session,
@@ -737,7 +755,9 @@ def ensure_indexes(
     queries = build_create_index_queries(node_schema)
 
     for query in queries:
-        if not query.startswith("CREATE INDEX IF NOT EXISTS"):
+        if not query.startswith(
+            ("CREATE INDEX IF NOT EXISTS", "CREATE CONSTRAINT IF NOT EXISTS")
+        ):
             raise ValueError(
                 'Query provided to `ensure_indexes()` does not start with "CREATE INDEX IF NOT EXISTS".',
             )
@@ -774,7 +794,9 @@ def ensure_indexes_for_matchlinks(
     queries = build_create_index_queries_for_matchlink(rel_schema)
     logger.debug(f"CREATE INDEX queries for {rel_schema.rel_label}: {queries}")
     for query in queries:
-        if not query.startswith("CREATE INDEX IF NOT EXISTS"):
+        if not query.startswith(
+            ("CREATE INDEX IF NOT EXISTS", "CREATE CONSTRAINT IF NOT EXISTS")
+        ):
             raise ValueError(
                 'Query provided to `ensure_indexes_for_matchlinks()` does not start with "CREATE INDEX IF NOT EXISTS".',
             )
@@ -903,6 +925,7 @@ def load_matchlinks(
             "This is needed for cleanup queries."
         )
 
+    kwargs = add_guard0_org_parameter(kwargs)
     ensure_indexes_for_matchlinks(neo4j_session, rel_schema)
     matchlink_query = build_matchlink_query(rel_schema)
     logger.debug(f"Matchlink query: {matchlink_query}")
@@ -996,6 +1019,7 @@ def load_matchlinks_cartesian_product(
             "This is needed for cleanup queries."
         )
 
+    kwargs = add_guard0_org_parameter(kwargs)
     ensure_indexes_for_matchlinks(neo4j_session, rel_schema)
     matchlink_query = build_matchlink_cartesian_product_query(rel_schema)
     logger.debug(f"Matchlink Cartesian product query: {matchlink_query}")

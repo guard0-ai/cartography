@@ -34,7 +34,10 @@ def run(neo4j_session: neo4j.Session, config: Config) -> None:
             GraphJob.run_from_json_file(
                 path,
                 neo4j_session,
-                {"UPDATE_TAG": config.update_tag},
+                {
+                    "UPDATE_TAG": config.update_tag,
+                    "GUARD0_ORG_ID": config.guard0_org_id,
+                },
             )
         except (KeyboardInterrupt, SystemExit):
             raise

@@ -178,6 +178,8 @@ class Config:
     :param okta_saml_role_regex: The regex used to map okta groups to AWS roles. Optional.
     :type github_config: str
     :param github_config: Base64 encoded config object for GitHub ingestion. Optional.
+    :type github_best_effort_mode: bool
+    :param github_best_effort_mode: Continue with remaining GitHub installations when one fails. Optional.
     :type github_commit_lookback_days: int
     :param github_commit_lookback_days: Number of days to look back for GitHub commit tracking. Optional.
     :type digitalocean_token: str
@@ -443,6 +445,7 @@ class Config:
         neo4j_database=None,
         selected_modules=None,
         update_tag=None,
+        guard0_org_id=None,
         aws_sync_all_profiles=False,
         aws_regions=None,
         aws_best_effort_mode=False,
@@ -468,6 +471,7 @@ class Config:
         okta_base_domain="okta.com",
         okta_saml_role_regex=None,
         github_config=None,
+        github_best_effort_mode=False,
         github_commit_lookback_days=30,
         digitalocean_token=None,
         permission_relationships_file=None,
@@ -634,6 +638,7 @@ class Config:
         self.neo4j_database = neo4j_database
         self.selected_modules = selected_modules
         self.update_tag = update_tag
+        self.guard0_org_id = guard0_org_id
         self.aws_sync_all_profiles = aws_sync_all_profiles
         self.aws_regions = aws_regions
         self.aws_organization_account_ids = aws_organization_account_ids
@@ -679,6 +684,7 @@ class Config:
         self.okta_base_domain = okta_base_domain
         self.okta_saml_role_regex = okta_saml_role_regex
         self.github_config = github_config
+        self.github_best_effort_mode = github_best_effort_mode
         self.github_commit_lookback_days = github_commit_lookback_days
         self.digitalocean_token = digitalocean_token
         self.permission_relationships_file = permission_relationships_file

@@ -11,13 +11,25 @@ def migrate_dependency_graph_manifest_label(
     run_write_query(
         neo4j_session,
         """
-        MATCH (org:GitHubOrganization{id: $owner_org_id})
-        MATCH (manifest:DependencyGraphManifest)
+        MATCH (org:GitHubOrganization{
+            guard0_org_id: $GUARD0_ORG_ID,
+            id: $owner_org_id
+        })
+        MATCH (manifest:DependencyGraphManifest{
+            guard0_org_id: $GUARD0_ORG_ID
+        })
         WHERE EXISTS {
-            MATCH (org)-[:RESOURCE]->(manifest)
+            MATCH (org)-[:RESOURCE{
+                guard0_org_id: $GUARD0_ORG_ID
+            }]->(manifest)
         } OR EXISTS {
-            MATCH (org)<-[:OWNER]-(:GitHubRepository)
-                  -[:HAS_MANIFEST]->(manifest)
+            MATCH (org)<-[:OWNER{
+                guard0_org_id: $GUARD0_ORG_ID
+            }]-(repo:GitHubRepository{
+                guard0_org_id: $GUARD0_ORG_ID
+            })-[:HAS_MANIFEST{
+                guard0_org_id: $GUARD0_ORG_ID
+            }]->(manifest)
         }
         SET manifest:GitHubDependencyGraphManifest
         """,

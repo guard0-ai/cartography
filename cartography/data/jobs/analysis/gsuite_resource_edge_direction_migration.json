@@ -3,12 +3,12 @@
   "statements": [
     {
       "__comment__": "DEPRECATED: temporary backward-compatibility migration. Earlier versions created (GSuiteUser)-[:RESOURCE]->(GSuiteTenant) (OUTWARD); the schema now expects (GSuiteTenant)-[:RESOURCE]->(GSuiteUser) (INWARD). Recreate inverted edges and drop the originals so cleanup picks up the new direction. Remove in v1.0.0.",
-      "query": "MATCH (u:GSuiteUser)-[r:RESOURCE]->(t:GSuiteTenant) MERGE (t)-[r2:RESOURCE]->(u) ON CREATE SET r2.lastupdated = r.lastupdated DELETE r",
+      "query": "MATCH (u:GSuiteUser {guard0_org_id: $GUARD0_ORG_ID})-[r:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->(t:GSuiteTenant {guard0_org_id: $GUARD0_ORG_ID}) MERGE (t)-[r2:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->(u) ON CREATE SET r2.lastupdated = r.lastupdated DELETE r",
       "iterative": false
     },
     {
       "__comment__": "DEPRECATED: same migration for GSuiteGroup. Remove in v1.0.0.",
-      "query": "MATCH (g:GSuiteGroup)-[r:RESOURCE]->(t:GSuiteTenant) MERGE (t)-[r2:RESOURCE]->(g) ON CREATE SET r2.lastupdated = r.lastupdated DELETE r",
+      "query": "MATCH (g:GSuiteGroup {guard0_org_id: $GUARD0_ORG_ID})-[r:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->(t:GSuiteTenant {guard0_org_id: $GUARD0_ORG_ID}) MERGE (t)-[r2:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->(g) ON CREATE SET r2.lastupdated = r.lastupdated DELETE r",
       "iterative": false
     }
   ]

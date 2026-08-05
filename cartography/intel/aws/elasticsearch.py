@@ -237,7 +237,11 @@ def cleanup(neo4j_session: neo4j.Session, update_tag: int, aws_account_id: int) 
     # DNSRecord:AWSDNSRecord nodes and DNS_POINTS_TO edges outside the schema.
     # This will be handled at the ontology level soon.
     cleanup_dns_query = """
-        MATCH (:AWSAccount{id: $AWS_ID})-[:RESOURCE]->(:AWSESDomain)<-[:DNS_POINTS_TO]-(n:DNSRecord)
+        MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
+              -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+              (:AWSESDomain {guard0_org_id: $GUARD0_ORG_ID})
+              <-[:DNS_POINTS_TO {guard0_org_id: $GUARD0_ORG_ID}]-
+              (n:DNSRecord {guard0_org_id: $GUARD0_ORG_ID})
         WHERE n.lastupdated <> $UPDATE_TAG
         DETACH DELETE n
     """

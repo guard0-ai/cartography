@@ -68,3 +68,10 @@ class AWSPrincipalServiceAccessSchema(CartographyNodeSchema):
     sub_resource_relationship: AWSPrincipalServiceAccessToAWSAccountRel = (
         AWSPrincipalServiceAccessToAWSAccountRel()
     )
+
+    @property
+    def enforce_tenant_identity_uniqueness(self) -> bool:
+        # AWSPrincipal is a shared label applied to concrete IAM principal nodes.
+        # Those concrete schemas own identity uniqueness; this composite schema
+        # only augments them and must coexist with the shared-label lookup index.
+        return False

@@ -17,6 +17,7 @@ from cartography.client.core.tx import read_list_of_dicts_tx
 from cartography.client.core.tx import read_list_of_values_tx
 from cartography.client.core.tx import run_write_query
 from cartography.graph.statement import GraphStatement
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
@@ -443,10 +444,13 @@ def compile_statement(statements: List[Any]) -> List[Any]:
 def get_principals_for_account(neo4j_session: neo4j.Session, account_id: str) -> Dict:
     get_policy_query = """
     MATCH
-    (acc:AWSAccount{id:$AccountId})-[:RESOURCE]->
-    (principal:AWSPrincipal)-[:POLICY]->
-    (policy:AWSPolicy)-[:STATEMENT]->
-    (statements:AWSPolicyStatement)
+    (acc:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AccountId})
+    -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+    (principal:AWSPrincipal {guard0_org_id: $GUARD0_ORG_ID})
+    -[:POLICY {guard0_org_id: $GUARD0_ORG_ID}]->
+    (policy:AWSPolicy {guard0_org_id: $GUARD0_ORG_ID})
+    -[:STATEMENT {guard0_org_id: $GUARD0_ORG_ID}]->
+    (statements:AWSPolicyStatement {guard0_org_id: $GUARD0_ORG_ID})
     RETURN
     DISTINCT principal.arn as principal_arn, policy.id as policy_id, collect(statements) as statements
     """
@@ -454,6 +458,7 @@ def get_principals_for_account(neo4j_session: neo4j.Session, account_id: str) ->
         read_list_of_dicts_tx,
         get_policy_query,
         AccountId=account_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
     principals: Dict[Any, Any] = {}
     for r in results:
@@ -494,9 +499,17 @@ def build_target_precondition_clause(precondition: Dict | None) -> str:
             f"got: {direction!r}",
         )
     if direction.lower() == "incoming":
-        pattern = f"(resource)<-[:{relationship}]-(:{related_label})"
+        pattern = (
+            f"(resource)<-[:{relationship} "
+            "{guard0_org_id: $GUARD0_ORG_ID}]-"
+            f"(:{related_label} {{guard0_org_id: $GUARD0_ORG_ID}})"
+        )
     else:
-        pattern = f"(resource)-[:{relationship}]->(:{related_label})"
+        pattern = (
+            f"(resource)-[:{relationship} "
+            "{guard0_org_id: $GUARD0_ORG_ID}]->"
+            f"(:{related_label} {{guard0_org_id: $GUARD0_ORG_ID}})"
+        )
     return f"AND EXISTS {{ MATCH {pattern} }}"
 
 
@@ -508,7 +521,11 @@ def get_resource_arns(
 ) -> List[Any]:
     get_resource_query = Template(
         """
-    MATCH (acc:AWSAccount{id:$AccountId})-[:RESOURCE]->(resource:$node_label)
+    MATCH (acc:AWSAccount {
+        guard0_org_id: $GUARD0_ORG_ID,
+        id: $AccountId
+    })-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+      (resource:$node_label {guard0_org_id: $GUARD0_ORG_ID})
     WHERE resource.arn IS NOT NULL
     $precondition_clause
     return resource.arn as arn
@@ -522,6 +539,7 @@ def get_resource_arns(
         read_list_of_values_tx,
         get_resource_query_template,
         AccountId=account_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
 
 
@@ -535,10 +553,19 @@ def load_principal_mappings(
     map_policy_query = Template(
         """
     UNWIND $Mapping as mapping
-    MATCH (principal:AWSPrincipal{arn:mapping.principal_arn})
-    MATCH (resource:$node_label{arn:mapping.resource_arn})
-    MERGE (principal)-[r:$relationship_name]->(resource)
+    MATCH (principal:AWSPrincipal {
+        guard0_org_id: $GUARD0_ORG_ID,
+        arn:mapping.principal_arn
+    })
+    MATCH (resource:$node_label {
+        guard0_org_id: $GUARD0_ORG_ID,
+        arn:mapping.resource_arn
+    })
+    MERGE (principal)-[r:$relationship_name {
+        guard0_org_id: $GUARD0_ORG_ID
+    }]->(resource)
     SET r.lastupdated = $aws_update_tag,
+        r.guard0_org_id = $GUARD0_ORG_ID,
         r.has_condition = coalesce(mapping.has_condition, false),
         r.condition_keys = mapping.condition_keys,
         r.conditions = mapping.conditions
@@ -572,8 +599,11 @@ def cleanup_rpr(
     )
     cleanup_rpr_query = Template(
         """
-        MATCH (:AWSAccount{id: $AWS_ID})-[:RESOURCE]->(principal:AWSPrincipal)-[r:$relationship_name]->
-        (resource:$node_label)
+        MATCH (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
+              -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+              (principal:AWSPrincipal {guard0_org_id: $GUARD0_ORG_ID})
+              -[r:$relationship_name {guard0_org_id: $GUARD0_ORG_ID}]->
+              (resource:$node_label {guard0_org_id: $GUARD0_ORG_ID})
         WHERE r.lastupdated <> $UPDATE_TAG
         WITH r LIMIT $LIMIT_SIZE  DELETE (r) return COUNT(*) as TotalCompleted
     """,

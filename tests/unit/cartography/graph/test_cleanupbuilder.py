@@ -136,6 +136,7 @@ def test_get_params_from_queries():
     """
     queries: list[str] = build_cleanup_queries(InterestingAssetSchema())
     assert set(get_parameters(queries)) == {
+        "GUARD0_ORG_ID",
         "UPDATE_TAG",
         "sub_resource_id",
         "LIMIT_SIZE",

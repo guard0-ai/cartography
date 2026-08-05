@@ -13,6 +13,7 @@ from cartography.intel.aws.iam import get_role_tags
 from cartography.intel.aws.iam import get_user_tags
 from cartography.intel.aws.util.botocore_config import create_boto3_client
 from cartography.stats import get_stats_client
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import timeit
 
@@ -240,19 +241,32 @@ INGEST_TAG_TEMPLATE = Template(
     UNWIND $TagData as tag_mapping
         UNWIND tag_mapping.Tags as input_tag
             MATCH
-            (a:AWSAccount{id:$Account})-[res:RESOURCE]->(resource:$resource_label{$property:tag_mapping.resource_id})
+            (a:AWSAccount{guard0_org_id: $GUARD0_ORG_ID, id:$Account})
+            -[res:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->
+            (resource:$resource_label{
+                guard0_org_id: $GUARD0_ORG_ID,
+                $property:tag_mapping.resource_id
+            })
+            WHERE true
             $region_filter
             MERGE
-            (aws_tag:AWSTag:Tag{id:input_tag.Key + ":" + input_tag.Value})
+            (aws_tag:AWSTag:Tag{
+                guard0_org_id: $GUARD0_ORG_ID,
+                id:input_tag.Key + ":" + input_tag.Value
+            })
             ON CREATE SET aws_tag.firstseen = timestamp()
 
             SET aws_tag.lastupdated = $UpdateTag,
+            aws_tag.guard0_org_id = $GUARD0_ORG_ID,
             aws_tag.key = input_tag.Key,
             aws_tag.value =  input_tag.Value,
             aws_tag._ont_source = 'aws'
 
-            MERGE (resource)-[r:TAGGED]->(aws_tag)
+            MERGE (resource)-[r:TAGGED {
+                guard0_org_id: $GUARD0_ORG_ID
+            }]->(aws_tag)
             SET r.lastupdated = $UpdateTag,
+            r.guard0_org_id = $GUARD0_ORG_ID,
             r.firstseen = timestamp()
     """,
 )
@@ -261,15 +275,16 @@ INGEST_TAG_TEMPLATE = Template(
 def _build_ingest_tag_query(resource_type: str) -> str:
     """Build the tag ingestion Cypher for a resource type.
 
-    Region-scoped resource types (those with a ``region_property`` mapping) get a
-    ``WHERE resource.<prop> = $Region`` predicate so that same-named resources in
-    different regions are not cross-tagged. The injected ``$Region`` is not
+    Region-scoped resource types (those with a ``region_property`` mapping) add a
+    ``resource.<prop> = $Region`` predicate after the mandatory tenant predicate
+    so that same-named resources in different regions are not cross-tagged. The
+    injected ``$Region`` is not
     re-scanned by ``safe_substitute`` and is bound as a normal Cypher parameter.
     """
     mapping = TAG_RESOURCE_TYPE_MAPPINGS[resource_type]
     region_property = mapping.get("region_property")
     region_filter = (
-        f"WHERE resource.{region_property} = $Region" if region_property else ""
+        f"AND resource.{region_property} = $Region" if region_property else ""
     )
     return INGEST_TAG_TEMPLATE.safe_substitute(
         resource_label=mapping["label"],
@@ -296,6 +311,7 @@ def _load_tags_tx(
         UpdateTag=aws_update_tag,
         Region=region,
         Account=current_aws_account_id,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     ).consume()
 
 
@@ -358,59 +374,66 @@ def _group_tag_data_by_resource_type(
     return grouped
 
 
-# Mapping of resource labels to their path to AWSAccount for cleanup
-# Most resources have a direct RESOURCE relationship, but some require traversal
+def _tenant_resource_cleanup_path(label: str) -> str:
+    return (
+        f"(:{label} {{guard0_org_id: $GUARD0_ORG_ID}})"
+        "<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-"
+        "(:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})"
+    )
+
+
+# Mapping of resource labels to their tenant-scoped path to AWSAccount for
+# cleanup. Most resources have a direct RESOURCE relationship, but network
+# interfaces require traversal through their subnet.
 _RESOURCE_CLEANUP_PATHS: Dict[str, str] = {
-    "AWSEC2Instance": "(:AWSEC2Instance)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSNetworkInterface": (
-        "(:AWSNetworkInterface)-[:PART_OF_SUBNET]->"
-        "(:AWSEC2Subnet)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})"
-    ),
-    "AWSEC2SecurityGroup": "(:AWSEC2SecurityGroup)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSEC2Subnet": "(:AWSEC2Subnet)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSVpc": "(:AWSVpc)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSESDomain": "(:AWSESDomain)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSRedshiftCluster": "(:AWSRedshiftCluster)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSRDSCluster": "(:AWSRDSCluster)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSRDSInstance": "(:AWSRDSInstance)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSRDSSnapshot": "(:AWSRDSSnapshot)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSDBSubnetGroup": "(:AWSDBSubnetGroup)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSS3Bucket": "(:AWSS3Bucket)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSRole": "(:AWSRole)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSUser": "(:AWSUser)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSGroup": "(:AWSGroup)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSKMSKey": "(:AWSKMSKey)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSLambda": "(:AWSLambda)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSDynamoDBTable": "(:AWSDynamoDBTable)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSAutoScalingGroup": "(:AWSAutoScalingGroup)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSEC2KeyPair": "(:AWSEC2KeyPair)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSECRRepository": "(:AWSECRRepository)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSTransitGateway": "(:AWSTransitGateway)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSTransitGatewayAttachment": (
-        "(:AWSTransitGatewayAttachment)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})"
-    ),
-    "AWSEBSVolume": "(:AWSEBSVolume)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSElasticIPAddress": "(:AWSElasticIPAddress)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSECSCluster": "(:AWSECSCluster)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSECSContainer": "(:AWSECSContainer)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSECSContainerInstance": (
-        "(:AWSECSContainerInstance)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})"
-    ),
-    "AWSECSTask": "(:AWSECSTask)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSECSTaskDefinition": "(:AWSECSTaskDefinition)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSEKSCluster": "(:AWSEKSCluster)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSElasticacheCluster": "(:AWSElasticacheCluster)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSLoadBalancer": ("(:AWSLoadBalancer)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})"),
-    "AWSLoadBalancerV2": "(:AWSLoadBalancerV2)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSEMRCluster": "(:AWSEMRCluster)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSSecretsManagerSecret": (
-        "(:AWSSecretsManagerSecret)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})"
-    ),
-    "AWSSQSQueue": "(:AWSSQSQueue)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})",
-    "AWSInternetGateway": (
-        "(:AWSInternetGateway)<-[:RESOURCE]-(:AWSAccount{id: $AWS_ID})"
-    ),
+    label: _tenant_resource_cleanup_path(label)
+    for label in (
+        "AWSEC2Instance",
+        "AWSEC2SecurityGroup",
+        "AWSEC2Subnet",
+        "AWSVpc",
+        "AWSESDomain",
+        "AWSRedshiftCluster",
+        "AWSRDSCluster",
+        "AWSRDSInstance",
+        "AWSRDSSnapshot",
+        "AWSDBSubnetGroup",
+        "AWSS3Bucket",
+        "AWSRole",
+        "AWSUser",
+        "AWSGroup",
+        "AWSKMSKey",
+        "AWSLambda",
+        "AWSDynamoDBTable",
+        "AWSAutoScalingGroup",
+        "AWSEC2KeyPair",
+        "AWSECRRepository",
+        "AWSTransitGateway",
+        "AWSTransitGatewayAttachment",
+        "AWSEBSVolume",
+        "AWSElasticIPAddress",
+        "AWSECSCluster",
+        "AWSECSContainer",
+        "AWSECSContainerInstance",
+        "AWSECSTask",
+        "AWSECSTaskDefinition",
+        "AWSEKSCluster",
+        "AWSElasticacheCluster",
+        "AWSLoadBalancer",
+        "AWSLoadBalancerV2",
+        "AWSEMRCluster",
+        "AWSSecretsManagerSecret",
+        "AWSSQSQueue",
+        "AWSInternetGateway",
+    )
 }
+_RESOURCE_CLEANUP_PATHS["AWSNetworkInterface"] = (
+    "(:AWSNetworkInterface {guard0_org_id: $GUARD0_ORG_ID})"
+    "-[:PART_OF_SUBNET {guard0_org_id: $GUARD0_ORG_ID}]->"
+    "(:AWSEC2Subnet {guard0_org_id: $GUARD0_ORG_ID})"
+    "<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-"
+    "(:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})"
+)
 
 
 def _run_cleanup_until_empty(
@@ -461,20 +484,24 @@ def cleanup(neo4j_session: neo4j.Session, common_job_parameters: Dict) -> None:
         _run_cleanup_until_empty(
             neo4j_session,
             f"""
-            MATCH (n:AWSTag)<-[:TAGGED]-{path}
-            WHERE n.lastupdated <> $UPDATE_TAG
+            MATCH (n:AWSTag {{guard0_org_id: $GUARD0_ORG_ID}})
+                  <-[:TAGGED {{guard0_org_id: $GUARD0_ORG_ID}}]-{path}
+            WHERE n.guard0_org_id = $GUARD0_ORG_ID
+              AND n.lastupdated <> $UPDATE_TAG
             WITH n LIMIT $LIMIT_SIZE
             DETACH DELETE n
             """,
             batch_size=cleanup_batch_size,
             AWS_ID=common_job_parameters["AWS_ID"],
             UPDATE_TAG=common_job_parameters["UPDATE_TAG"],
+            GUARD0_ORG_ID=common_job_parameters["GUARD0_ORG_ID"],
         )
         # Delete stale TAGGED relationships
         _run_cleanup_until_empty(
             neo4j_session,
             f"""
-            MATCH (:AWSTag)<-[r:TAGGED]-{path}
+            MATCH (:AWSTag {{guard0_org_id: $GUARD0_ORG_ID}})
+                  <-[r:TAGGED {{guard0_org_id: $GUARD0_ORG_ID}}]-{path}
             WHERE r.lastupdated <> $UPDATE_TAG
             WITH r LIMIT $LIMIT_SIZE
             DELETE r
@@ -482,19 +509,22 @@ def cleanup(neo4j_session: neo4j.Session, common_job_parameters: Dict) -> None:
             batch_size=cleanup_batch_size,
             AWS_ID=common_job_parameters["AWS_ID"],
             UPDATE_TAG=common_job_parameters["UPDATE_TAG"],
+            GUARD0_ORG_ID=common_job_parameters["GUARD0_ORG_ID"],
         )
 
     # Clean up orphaned tags (tags with no relationships)
     _run_cleanup_until_empty(
         neo4j_session,
         """
-        MATCH (n:AWSTag)
-        WHERE NOT (n)--() AND n.lastupdated <> $UPDATE_TAG
+        MATCH (n:AWSTag {guard0_org_id: $GUARD0_ORG_ID})
+        WHERE NOT (n)-[:TAGGED {guard0_org_id: $GUARD0_ORG_ID}]-()
+          AND n.lastupdated <> $UPDATE_TAG
         WITH n LIMIT $LIMIT_SIZE
         DETACH DELETE n
         """,
         batch_size=cleanup_batch_size,
         UPDATE_TAG=common_job_parameters["UPDATE_TAG"],
+        GUARD0_ORG_ID=common_job_parameters["GUARD0_ORG_ID"],
     )
 
 

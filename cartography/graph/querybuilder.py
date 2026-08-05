@@ -17,6 +17,7 @@ from cartography.models.ontology.mapping import (
     get_semantic_label_mapping_from_node_schema,
 )
 from cartography.models.ontology.mapping.specs import OntologyFieldMapping
+from cartography.tenancy import GUARD0_ORG_PARAMETER
 from cartography.version import get_cartography_version
 
 logger = logging.getLogger(__name__)
@@ -521,11 +522,11 @@ def _build_rel_properties_statement(
         The rel_var parameter should match the relationship variable used in the
         Neo4j MERGE or MATCH clause.
     """
-    set_clause = ""
+    assignments = [f"{rel_var}.guard0_org_id = ${GUARD0_ORG_PARAMETER}"]
     ingest_fields_template = Template("$rel_var.$rel_property = $property_ref")
 
     if rel_property_map:
-        set_clause += ",\n".join(
+        assignments.extend(
             [
                 ingest_fields_template.safe_substitute(
                     rel_var=rel_var,
@@ -535,7 +536,7 @@ def _build_rel_properties_statement(
                 for rel_property, property_ref in rel_property_map.items()
             ],
         )
-    return set_clause
+    return ",\n".join(assignments)
 
 
 def _build_match_clause(matcher: TargetNodeMatcher | SourceNodeMatcher) -> str:
@@ -569,10 +570,13 @@ def _build_match_clause(matcher: TargetNodeMatcher | SourceNodeMatcher) -> str:
     """
     match = Template("$Key: $PropRef")
     matcher_asdict = asdict(matcher)
-    return ", ".join(
+    resource_match = ", ".join(
         match.safe_substitute(Key=key, PropRef=prop_ref)
         for key, prop_ref in matcher_asdict.items()
     )
+    if not resource_match:
+        return f"guard0_org_id: ${GUARD0_ORG_PARAMETER}"
+    return f"guard0_org_id: ${GUARD0_ORG_PARAMETER}, {resource_match}"
 
 
 def _build_where_clause_for_rel_match(
@@ -626,7 +630,7 @@ def _build_where_clause_for_rel_match(
 
     matcher_asdict = asdict(matcher)
 
-    result = []
+    result = [f"{node_var}.guard0_org_id = ${GUARD0_ORG_PARAMETER}"]
     for key, prop_ref in matcher_asdict.items():
         if prop_ref.ignore_case:
             prop_line = case_insensitive_match.safe_substitute(
@@ -1175,11 +1179,15 @@ def build_ingestion_query(
     query_template = Template(
         """
         UNWIND $DictList AS item
-            MERGE (i:$node_label{id: $dict_id_field})
+            MERGE (i:$node_label{
+                guard0_org_id: $GUARD0_ORG_ID,
+                id: $dict_id_field
+            })
             ON CREATE SET i.firstseen = timestamp()
             SET
                 i._module_name = "$module_name",
                 i._module_version = "$module_version",
+                i.guard0_org_id = $GUARD0_ORG_ID,
                 $set_node_properties_statement
                 $set_ontology_node_properties_statement
             $attach_relationships_statement
@@ -1280,10 +1288,14 @@ def build_conditional_label_queries(
         # Build the relationship pattern based on direction
         if sub_rel.direction == LinkDirection.INWARD:
             # (node)<-[:REL]-(sub_resource)
-            rel_pattern = f"<-[:{sub_rel.rel_label}]-"
+            rel_pattern = (
+                f"<-[:{sub_rel.rel_label} " "{guard0_org_id: $GUARD0_ORG_ID}]-"
+            )
         else:
             # (node)-[:REL]->(sub_resource)
-            rel_pattern = f"-[:{sub_rel.rel_label}]->"
+            rel_pattern = (
+                f"-[:{sub_rel.rel_label} " "{guard0_org_id: $GUARD0_ORG_ID}]->"
+            )
 
         # Build the match clause for the sub-resource node
         sub_match_clause = _build_match_clause(sub_rel.target_node_matcher)
@@ -1291,30 +1303,30 @@ def build_conditional_label_queries(
         # Scoped templates that filter by sub-resource
         remove_template = Template(
             """
-            MATCH (n:$node_label:$conditional_label)$rel_pattern(sub:$sub_label{$sub_match_clause})
+            MATCH (n:$node_label:$conditional_label {guard0_org_id: $GUARD0_ORG_ID})$rel_pattern(sub:$sub_label{$sub_match_clause})
             REMOVE n:$conditional_label
             """,
         )
 
         set_template = Template(
             """
-            MATCH (n:$node_label)$rel_pattern(sub:$sub_label{$sub_match_clause})
+            MATCH (n:$node_label {guard0_org_id: $GUARD0_ORG_ID})$rel_pattern(sub:$sub_label{$sub_match_clause})
             WHERE $where_clause
             SET n:$conditional_label
             """,
         )
     else:
-        # Unscoped templates for global resources without a tenant relationship
+        # Nodes without a sub-resource relationship still belong to a Guard0 tenant.
         remove_template = Template(
             """
-            MATCH (n:$node_label:$conditional_label)
+            MATCH (n:$node_label:$conditional_label {guard0_org_id: $GUARD0_ORG_ID})
             REMOVE n:$conditional_label
             """,
         )
 
         set_template = Template(
             """
-            MATCH (n:$node_label)
+            MATCH (n:$node_label {guard0_org_id: $GUARD0_ORG_ID})
             WHERE $where_clause
             SET n:$conditional_label
             """,
@@ -1415,17 +1427,29 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
         on all node types, plus any properties marked with extra_index=True.
         It also indexes target node properties from all relationships.
     """
-    index_template = Template(
-        "CREATE INDEX IF NOT EXISTS FOR (n:$TargetNodeLabel) ON (n.$TargetAttribute);",
+    tenant_index_template = Template(
+        "CREATE INDEX IF NOT EXISTS FOR (n:$TargetNodeLabel) "
+        "ON (n.guard0_org_id, n.$TargetAttribute);"
+    )
+    tenant_constraint_template = Template(
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (n:$TargetNodeLabel) "
+        "REQUIRE (n.guard0_org_id, n.id) IS UNIQUE;"
     )
 
-    # First ensure an index exists for the node_schema and all extra labels on the `id` and `lastupdated` fields
-    result = [
-        index_template.safe_substitute(
+    # The composite uniqueness constraint supplies the backing index for the
+    # tenant-scoped stable ID. Creating an explicit index for the same label and
+    # properties first prevents Neo4j from creating the constraint.
+    identity_statement = (
+        tenant_constraint_template.safe_substitute(TargetNodeLabel=node_schema.label)
+        if node_schema.enforce_tenant_identity_uniqueness
+        else tenant_index_template.safe_substitute(
             TargetNodeLabel=node_schema.label,
             TargetAttribute="id",
-        ),
-        index_template.safe_substitute(
+        )
+    )
+    result = [
+        identity_statement,
+        tenant_index_template.safe_substitute(
             TargetNodeLabel=node_schema.label,
             TargetAttribute="lastupdated",
         ),
@@ -1435,13 +1459,13 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
             if isinstance(label, str):
                 # Simple string label - create index on id and lastupdated
                 result.append(
-                    index_template.safe_substitute(
+                    tenant_index_template.safe_substitute(
                         TargetNodeLabel=label,
                         TargetAttribute="id",  # Precondition: 'id' is defined on all cartography node_schema objects.
                     ),
                 )
                 result.append(
-                    index_template.safe_substitute(
+                    tenant_index_template.safe_substitute(
                         TargetNodeLabel=label,
                         TargetAttribute="lastupdated",
                     ),
@@ -1449,13 +1473,13 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
             elif isinstance(label, ConditionalNodeLabel):
                 # Conditional label - create index on the conditional label's id and lastupdated
                 result.append(
-                    index_template.safe_substitute(
+                    tenant_index_template.safe_substitute(
                         TargetNodeLabel=label.label,
                         TargetAttribute="id",
                     ),
                 )
                 result.append(
-                    index_template.safe_substitute(
+                    tenant_index_template.safe_substitute(
                         TargetNodeLabel=label.label,
                         TargetAttribute="lastupdated",
                     ),
@@ -1464,7 +1488,7 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
                 # to speed up the WHERE clause in the conditional label query
                 for condition_field in label.conditions.keys():
                     result.append(
-                        index_template.safe_substitute(
+                        tenant_index_template.safe_substitute(
                             TargetNodeLabel=node_schema.label,
                             TargetAttribute=condition_field,
                         ),
@@ -1479,8 +1503,15 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
         rel_schemas.extend(node_schema.other_relationships.rels)
     for rs in rel_schemas:
         for target_key in asdict(rs.target_node_matcher).keys():
+            # The target node's own schema creates the tenant-scoped identity
+            # constraint for `id`. Creating a plain composite index here first
+            # prevents Neo4j from creating that constraint when the target
+            # module runs later (for example, EC2 references AWSVpc before the
+            # VPC loader creates the AWSVpc constraint).
+            if target_key == "id":
+                continue
             result.append(
-                index_template.safe_substitute(
+                tenant_index_template.safe_substitute(
                     TargetNodeLabel=rs.target_node_label,
                     TargetAttribute=target_key,
                 ),
@@ -1490,7 +1521,7 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
     node_props_as_dict: dict[str, PropertyRef] = asdict(node_schema.properties)
     result.extend(
         [
-            index_template.safe_substitute(
+            tenant_index_template.safe_substitute(
                 TargetNodeLabel=node_schema.label,
                 TargetAttribute=prop_name,
             )
@@ -1507,7 +1538,7 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
         for label in node_schema.extra_node_labels.labels:
             label_name = label if isinstance(label, str) else label.label
             result.append(
-                index_template.safe_substitute(
+                tenant_index_template.safe_substitute(
                     TargetNodeLabel=label_name,
                     TargetAttribute="_ont_source",
                 ),
@@ -1516,7 +1547,7 @@ def build_create_index_queries(node_schema: CartographyNodeSchema) -> list[str]:
                 if not mapping_field.indexed:
                     continue
                 result.append(
-                    index_template.safe_substitute(
+                    tenant_index_template.safe_substitute(
                         TargetNodeLabel=label_name,
                         TargetAttribute=f"_ont_{mapping_field.ontology_field}",
                     ),
@@ -1577,7 +1608,8 @@ def build_create_index_queries_for_matchlink(
         return []
 
     index_template = Template(
-        "CREATE INDEX IF NOT EXISTS FOR (n:$NodeLabel) ON (n.$NodeAttribute);",
+        "CREATE INDEX IF NOT EXISTS FOR (n:$NodeLabel) "
+        "ON (n.guard0_org_id, n.$NodeAttribute);",
     )
 
     result = []
@@ -1616,7 +1648,7 @@ def build_create_index_queries_for_matchlink(
     # as a trailing inequality, so that order avoids broad scans under parallel sync load.
     rel_index_template = Template(
         "CREATE INDEX IF NOT EXISTS FOR ()$rel_direction[r:$RelLabel]$rel_direction_end() "
-        "ON (r._sub_resource_label, r._sub_resource_id, r.lastupdated);",
+        "ON (r.guard0_org_id, r._sub_resource_label, r._sub_resource_id, r.lastupdated);",
     )
     if rel_schema.direction == LinkDirection.INWARD:
         result.append(
@@ -1795,10 +1827,16 @@ def build_matchlink_cartesian_product_query(rel_schema: CartographyRelSchema) ->
     matchlink_cartesian_product_query_template = Template(
         """
         UNWIND $SourceValues AS source_value
-            MATCH (from:$source_node_label{$source_node_property: source_value})
+            MATCH (from:$source_node_label{
+                guard0_org_id: $GUARD0_ORG_ID,
+                $source_node_property: source_value
+            })
         WITH collect(from) AS sources
         UNWIND $TargetValues AS target_value
-            MATCH (to:$target_node_label{$target_node_property: target_value})
+            MATCH (to:$target_node_label{
+                guard0_org_id: $GUARD0_ORG_ID,
+                $target_node_property: target_value
+            })
         WITH sources, to
         UNWIND sources AS from
             MERGE $rel

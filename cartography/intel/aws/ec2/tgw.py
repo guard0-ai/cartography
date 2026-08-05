@@ -181,7 +181,9 @@ def cleanup_transit_gateways(
     run_write_query(
         neo4j_session,
         """
-        MATCH (n:AWSTransitGateway)-[:RESOURCE|SHARED_WITH]-(:AWSAccount{id: $AWS_ID})
+        MATCH (n:AWSTransitGateway {guard0_org_id: $GUARD0_ORG_ID})
+              -[:RESOURCE|SHARED_WITH {guard0_org_id: $GUARD0_ORG_ID}]-
+              (:AWSAccount {guard0_org_id: $GUARD0_ORG_ID, id: $AWS_ID})
         WHERE n.lastupdated <> $UPDATE_TAG
         DETACH DELETE n
         """,

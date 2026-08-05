@@ -31,6 +31,7 @@ from cartography.models.github.actions_variable import GitHubOrgActionsVariableS
 from cartography.models.github.actions_variable import GitHubRepoActionsVariableSchema
 from cartography.models.github.environment import GitHubEnvironmentSchema
 from cartography.models.github.workflow import GitHubWorkflowSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import run_analysis_job
 from cartography.util import timeit
 
@@ -722,7 +723,11 @@ def _get_repos_from_graph(neo4j_session: neo4j.Session, organization: str) -> li
     """
     org_url = f"https://github.com/{organization}"
     query = """
-    MATCH (org:GitHubOrganization {id: $org_url})<-[:OWNER]-(repo:GitHubRepository)
+    MATCH (org:GitHubOrganization {
+        guard0_org_id: $GUARD0_ORG_ID,
+        id: $org_url
+    })<-[:OWNER {guard0_org_id: $GUARD0_ORG_ID}]-
+      (repo:GitHubRepository {guard0_org_id: $GUARD0_ORG_ID})
     RETURN repo.name
     ORDER BY repo.name
     """
@@ -730,6 +735,7 @@ def _get_repos_from_graph(neo4j_session: neo4j.Session, organization: str) -> li
         read_list_of_values_tx,
         query,
         org_url=org_url,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
     return result
 

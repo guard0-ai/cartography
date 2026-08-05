@@ -32,6 +32,7 @@ from cartography.models.github.container_image_attestations import (
 from cartography.models.github.container_images import (
     GitHubContainerImageProvenanceSchema,
 )
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,11 @@ def _digests_already_enriched(
     org_url: str,
 ) -> set[str]:
     query = """
-    MATCH (org:GitHubOrganization {id: $org_url})-[:RESOURCE]->(img:GitHubContainerImage)
+    MATCH (org:GitHubOrganization {
+        guard0_org_id: $guard0_org_id,
+        id: $org_url
+    })-[:RESOURCE {guard0_org_id: $guard0_org_id}]->
+      (img:GitHubContainerImage {guard0_org_id: $guard0_org_id})
     WHERE img.source_uri IS NOT NULL
     RETURN img.digest
     """
@@ -61,6 +66,7 @@ def _digests_already_enriched(
         read_list_of_values_tx,
         query,
         org_url=org_url,
+        guard0_org_id=current_guard0_org_id(),
     )
     return {v for v in cast(list[str], values) if v}
 
@@ -293,7 +299,9 @@ def _refresh_skipped_attestation_lastupdated(
     if not digests:
         return
     query = """
-    MATCH (org:GitHubOrganization {id: $org_url})-[r:RESOURCE]->(att:GitHubContainerImageAttestation)
+    MATCH (org:GitHubOrganization {guard0_org_id: $guard0_org_id, id: $org_url})
+          -[r:RESOURCE {guard0_org_id: $guard0_org_id}]->
+          (att:GitHubContainerImageAttestation {guard0_org_id: $guard0_org_id})
     WHERE att.attests_digest IN $digests
     SET att.lastupdated = $update_tag,
         r.lastupdated = $update_tag
@@ -303,6 +311,7 @@ def _refresh_skipped_attestation_lastupdated(
         digests=list(digests),
         org_url=org_url,
         update_tag=update_tag,
+        guard0_org_id=current_guard0_org_id(),
     )
 
 

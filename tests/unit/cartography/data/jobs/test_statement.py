@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -42,7 +41,12 @@ def test_run_iterative_uses_retryable_write_until_no_updates(
     statement.run(session)
 
     assert statement.parameters["LIMIT_SIZE"] == 100
-    assert mock_execute_write_with_retry.call_args_list == [
-        call(session, statement._run_noniterative),
-        call(session, statement._run_noniterative),
-    ]
+    assert mock_execute_write_with_retry.call_count == 2
+    for retry_call in mock_execute_write_with_retry.call_args_list:
+        assert retry_call.args[0] is session
+        callback = retry_call.args[1]
+        assert callback.func == statement._run_noniterative
+        assert callback.keywords["parameters"] == {
+            "GUARD0_ORG_ID": "cartography-default",
+            "LIMIT_SIZE": 100,
+        }

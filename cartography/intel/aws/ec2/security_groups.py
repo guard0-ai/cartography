@@ -160,18 +160,21 @@ def load_ec2_security_groupinfo(
         lastupdated=update_tag,
     )
 
+    # Load the primary AWSIpRule schema before inbound rules add AWSIpRule as a
+    # shared label. This creates the tenant identity constraint before the
+    # shared-label lookup index and avoids a Neo4j index/constraint conflict.
     load_ip_rules(
         neo4j_session,
-        data.inbound_rules,
-        inbound=True,
+        data.egress_rules,
+        inbound=False,
         region=region,
         aws_account_id=current_aws_account_id,
         update_tag=update_tag,
     )
     load_ip_rules(
         neo4j_session,
-        data.egress_rules,
-        inbound=False,
+        data.inbound_rules,
+        inbound=True,
         region=region,
         aws_account_id=current_aws_account_id,
         update_tag=update_tag,

@@ -407,10 +407,14 @@ def merge_module_sync_metadata(
 
     template = Template(
         """
-        MERGE (n:ModuleSyncMetadata{id:'${group_type}_${group_id}_${synced_type}'})
+        MERGE (n:ModuleSyncMetadata {
+            guard0_org_id: $GUARD0_ORG_ID,
+            id:'${group_type}_${group_id}_${synced_type}'
+        })
         ON CREATE SET
             n:SyncMetadata, n.firstseen=timestamp()
-        SET n.syncedtype='${synced_type}',
+        SET n.guard0_org_id=$GUARD0_ORG_ID,
+            n.syncedtype='${synced_type}',
             n.grouptype='${group_type}',
             n.groupid='${group_id}',
             n.lastupdated=$UPDATE_TAG

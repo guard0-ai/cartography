@@ -2,6 +2,7 @@ import configparser
 import hashlib
 import json
 import logging
+import os
 import time
 from collections import defaultdict
 from collections import namedtuple
@@ -55,6 +56,7 @@ from cartography.models.github.repos import make_github_collaborator_schema
 from cartography.models.github.repos import ProgrammingLanguageSchema
 from cartography.models.github.ruleset_rules import GitHubRulesetRuleSchema
 from cartography.models.github.rulesets import GitHubRulesetSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import retries_with_backoff
 from cartography.util import run_analysis_job
 from cartography.util import timeit
@@ -2374,14 +2376,16 @@ def cleanup_orphaned_github_branches(
     """
     neo4j_session.run(
         """
-        MATCH (n:GitHubBranch)
+        MATCH (n:GitHubBranch {guard0_org_id: $GUARD0_ORG_ID})
         WHERE n.lastupdated <> $UPDATE_TAG
-          AND NOT (n)<-[:RESOURCE]-(:GitHubOrganization)
+          AND NOT (n)<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-
+                  (:GitHubOrganization {guard0_org_id: $GUARD0_ORG_ID})
         WITH n LIMIT $LIMIT_SIZE
         DETACH DELETE n
         """,
         UPDATE_TAG=common_job_parameters["UPDATE_TAG"],
         LIMIT_SIZE=100,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
 
 
@@ -2604,13 +2608,26 @@ def sync(
             exc_info=True,
         )
 
-    # Fetch dependency graph manifests per-repo to avoid 502s from heavy inline queries
-    dep_manifests_by_url, dep_manifests_cleanup_safe = _get_dep_manifests_for_repos(
-        repos_json,
-        organization,
-        github_url,
-        github_api_key,
-    )
+    # Fetch dependency graph manifests per-repo to avoid 502s from heavy inline queries.
+    # Allow local operators to skip this heavy enrichment when they need the core
+    # repository graph to load under constrained API/runtime conditions.
+    dep_manifests_by_url: dict[str, dict[str, Any]]
+    dep_manifests_cleanup_safe: bool
+    if os.environ.get("CARTOGRAPHY_GITHUB_SKIP_DEPENDENCY_MANIFESTS") == "1":
+        logger.warning(
+            "Skipping GitHub dependency graph manifests for org %s because "
+            "CARTOGRAPHY_GITHUB_SKIP_DEPENDENCY_MANIFESTS=1.",
+            organization,
+        )
+        dep_manifests_by_url = {}
+        dep_manifests_cleanup_safe = False
+    else:
+        dep_manifests_by_url, dep_manifests_cleanup_safe = _get_dep_manifests_for_repos(
+            repos_json,
+            organization,
+            github_url,
+            github_api_key,
+        )
     for repo in repos_json:
         if repo is not None and repo.get("url") in dep_manifests_by_url:
             repo["dependencyGraphManifests"] = dep_manifests_by_url[repo["url"]]

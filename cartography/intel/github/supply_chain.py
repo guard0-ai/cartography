@@ -28,6 +28,7 @@ from cartography.models.github.packaged_matchlink import (
 from cartography.models.github.packaged_matchlink import (
     ImagePackagedByWorkflowMatchLink,
 )
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import run_typed_analysis_job
 from cartography.util import timeit
 
@@ -60,17 +61,29 @@ def _get_unmatched_ghcr_image_owner_repos(
     # = update_tag); stale rels from previous runs must not block the fallback,
     # they will be reaped by the cleanup that runs after this step.
     query = """
-    MATCH (org:GitHubOrganization {id: $org_url})-[:RESOURCE]->(img:GitHubContainerImage)
+    MATCH (org:GitHubOrganization {guard0_org_id: $guard0_org_id, id: $org_url})
+          -[:RESOURCE {guard0_org_id: $guard0_org_id}]->
+          (img:GitHubContainerImage {guard0_org_id: $guard0_org_id})
     WHERE img:Image
-      AND NOT exists((img)-[:PACKAGED_FROM {lastupdated: $update_tag}]->())
-    MATCH (pkg:GitHubPackage)-[:HAS_IMAGE]->(img)
-    MATCH (repo:GitHubRepository)-[:HAS_PACKAGE]->(pkg)
+      AND NOT exists((img)-[:PACKAGED_FROM {
+          guard0_org_id: $guard0_org_id,
+          lastupdated: $update_tag
+      }]->())
+    MATCH (pkg:GitHubPackage {guard0_org_id: $guard0_org_id})
+          -[:HAS_IMAGE {guard0_org_id: $guard0_org_id}]->(img)
+    MATCH (repo:GitHubRepository {guard0_org_id: $guard0_org_id})
+          -[:HAS_PACKAGE {guard0_org_id: $guard0_org_id}]->(pkg)
     WITH img, collect(DISTINCT repo.id) AS repo_ids
     WHERE size(repo_ids) = 1
     RETURN img.digest AS image_digest, repo_ids[0] AS repo_url
     """
     org_url = f"https://github.com/{organization}"
-    result = neo4j_session.run(query, org_url=org_url, update_tag=update_tag)
+    result = neo4j_session.run(
+        query,
+        org_url=org_url,
+        update_tag=update_tag,
+        guard0_org_id=current_guard0_org_id(),
+    )
     return [
         {"image_digest": record["image_digest"], "repo_url": record["repo_url"]}
         for record in result
@@ -104,10 +117,17 @@ def get_unmatched_container_images_with_history(
     :return: List of ContainerImage objects with layer history populated
     """
     query = """
-        MATCH (img:Image)<-[:IMAGE]-(repo_img:ImageTag)<-[:REPO_IMAGE]-(repo:ContainerRegistry)
+        MATCH (img:Image {guard0_org_id: $guard0_org_id})
+              <-[:IMAGE {guard0_org_id: $guard0_org_id}]-
+              (repo_img:ImageTag {guard0_org_id: $guard0_org_id})
+              <-[:REPO_IMAGE {guard0_org_id: $guard0_org_id}]-
+              (repo:ContainerRegistry {guard0_org_id: $guard0_org_id})
         WHERE img.layer_diff_ids IS NOT NULL
           AND size(img.layer_diff_ids) > 0
-          AND NOT exists((img)-[:PACKAGED_FROM {lastupdated: $update_tag}]->())
+          AND NOT exists((img)-[:PACKAGED_FROM {
+              guard0_org_id: $guard0_org_id,
+              lastupdated: $update_tag
+          }]->())
           AND (
               NOT exists((img)-[:PACKAGED_FROM {_sub_resource_label: 'GitHubOrganization'}]->())
               OR exists((img)-[:PACKAGED_FROM {_sub_resource_id: $organization}]->())
@@ -131,7 +151,10 @@ def get_unmatched_container_images_with_history(
         WITH best
         UNWIND range(0, size(best.layer_diff_ids) - 1) AS idx
         WITH best, best.layer_diff_ids[idx] AS diff_id, idx
-        OPTIONAL MATCH (layer:ImageLayer {diff_id: diff_id})
+        OPTIONAL MATCH (layer:ImageLayer {
+            guard0_org_id: $guard0_org_id,
+            diff_id: diff_id
+        })
         WITH best, idx, {
             diff_id: diff_id,
             history: layer.history,
@@ -155,7 +178,12 @@ def get_unmatched_container_images_with_history(
     if limit:
         query += f" LIMIT {limit}"
 
-    result = neo4j_session.run(query, update_tag=update_tag, organization=organization)
+    result = neo4j_session.run(
+        query,
+        update_tag=update_tag,
+        organization=organization,
+        guard0_org_id=current_guard0_org_id(),
+    )
     images = []
 
     for record in result:

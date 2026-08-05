@@ -24,6 +24,7 @@ from cartography.models.aws.identitycenter.awspermissionset import (
 )
 from cartography.models.aws.identitycenter.awssogroup import AWSSSOGroupSchema
 from cartography.models.aws.identitycenter.awsssouser import AWSSSOUserSchema
+from cartography.tenancy import current_guard0_org_id
 from cartography.util import aws_handle_regions
 from cartography.util import timeit
 
@@ -467,8 +468,11 @@ def _get_permset_roles(
     based on the ASSIGNED_TO_ROLE relationship in the graph.
     """
     query = """
-    MATCH (role:AWSRole)<-[:ASSIGNED_TO_ROLE]-(permset:AWSPermissionSet)
-    MATCH (account:AWSAccount)-[:RESOURCE]->(role)
+    MATCH (role:AWSRole {guard0_org_id: $GUARD0_ORG_ID})
+          <-[:ASSIGNED_TO_ROLE {guard0_org_id: $GUARD0_ORG_ID}]-
+          (permset:AWSPermissionSet {guard0_org_id: $GUARD0_ORG_ID})
+    MATCH (account:AWSAccount {guard0_org_id: $GUARD0_ORG_ID})
+          -[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]->(role)
     WHERE permset.arn IN $PermSetIds
     RETURN permset.arn AS PermissionSetArn, role.arn AS RoleArn, account.id AS AccountId
     """
@@ -476,6 +480,7 @@ def _get_permset_roles(
         read_list_of_dicts_tx,
         query,
         PermSetIds=permset_ids,
+        GUARD0_ORG_ID=current_guard0_org_id(),
     )
     return {
         (entry["PermissionSetArn"], entry["AccountId"]): entry["RoleArn"]

@@ -131,12 +131,14 @@ def test_build_conditional_label_queries_single_condition():
 
     # First query should remove the label from all nodes that have it
     remove_query = queries[0]
-    assert "MATCH (n:TestAsset:Critical)" in remove_query
+    assert (
+        "MATCH (n:TestAsset:Critical {guard0_org_id: $GUARD0_ORG_ID})" in remove_query
+    )
     assert "REMOVE n:Critical" in remove_query
 
     # Second query should set the label on matching nodes
     set_query = queries[1]
-    assert "MATCH (n:TestAsset)" in set_query
+    assert "MATCH (n:TestAsset {guard0_org_id: $GUARD0_ORG_ID})" in set_query
     assert 'n.severity = "high"' in set_query
     assert "SET n:Critical" in set_query
 
@@ -153,21 +155,27 @@ def test_build_conditional_label_queries_multiple_conditions():
 
     # First conditional label: Critical (queries 0 and 1)
     critical_remove = queries[0]
-    assert "MATCH (n:TestAsset:Critical)" in critical_remove
+    assert (
+        "MATCH (n:TestAsset:Critical {guard0_org_id: $GUARD0_ORG_ID})"
+        in critical_remove
+    )
     assert "REMOVE n:Critical" in critical_remove
 
     critical_set = queries[1]
-    assert "MATCH (n:TestAsset)" in critical_set
+    assert "MATCH (n:TestAsset {guard0_org_id: $GUARD0_ORG_ID})" in critical_set
     assert 'n.severity = "high"' in critical_set
     assert "SET n:Critical" in critical_set
 
     # Second conditional label: PublicResource (queries 2 and 3)
     public_remove = queries[2]
-    assert "MATCH (n:TestAsset:PublicResource)" in public_remove
+    assert (
+        "MATCH (n:TestAsset:PublicResource {guard0_org_id: $GUARD0_ORG_ID})"
+        in public_remove
+    )
     assert "REMOVE n:PublicResource" in public_remove
 
     public_set = queries[3]
-    assert "MATCH (n:TestAsset)" in public_set
+    assert "MATCH (n:TestAsset {guard0_org_id: $GUARD0_ORG_ID})" in public_set
     assert 'n.is_public = "true"' in public_set
     assert 'n.severity = "high"' in public_set
     assert "SET n:PublicResource" in public_set
@@ -336,17 +344,19 @@ def test_build_conditional_label_queries_scoped_by_sub_resource():
 
     # REMOVE query should be scoped to the sub-resource
     remove_query = queries[0]
-    assert "MATCH (n:TestAsset:Critical)" in remove_query
+    assert (
+        "MATCH (n:TestAsset:Critical {guard0_org_id: $GUARD0_ORG_ID})" in remove_query
+    )
     # Should have the relationship pattern to AWSAccount (INWARD direction)
-    assert "<-[:RESOURCE]-" in remove_query
+    assert "<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-" in remove_query
     assert "(sub:AWSAccount{" in remove_query
     assert "id: $AWS_ID" in remove_query
     assert "REMOVE n:Critical" in remove_query
 
     # SET query should also be scoped to the sub-resource
     set_query = queries[1]
-    assert "MATCH (n:TestAsset)" in set_query
-    assert "<-[:RESOURCE]-" in set_query
+    assert "MATCH (n:TestAsset {guard0_org_id: $GUARD0_ORG_ID})" in set_query
+    assert "<-[:RESOURCE {guard0_org_id: $GUARD0_ORG_ID}]-" in set_query
     assert "(sub:AWSAccount{" in set_query
     assert "id: $AWS_ID" in set_query
     assert 'n.severity = "high"' in set_query
@@ -389,6 +399,6 @@ def test_build_conditional_label_queries_scoped_outward_direction():
 
     # Both queries should have OUTWARD relationship pattern
     for query in queries:
-        assert "-[:BELONGS_TO]->" in query
+        assert "-[:BELONGS_TO {guard0_org_id: $GUARD0_ORG_ID}]->" in query
         assert "(sub:Tenant{" in query
         assert "id: $tenant_id" in query

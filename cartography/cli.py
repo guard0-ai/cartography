@@ -432,6 +432,17 @@ class CLI:
                     rich_help_panel=PANEL_CORE,
                 ),
             ] = None,
+            guard0_org_id: Annotated[
+                str | None,
+                typer.Option(
+                    "--guard0-org-id",
+                    help=(
+                        "Trusted Guard0 organization identifier used to namespace every "
+                        "graph identity, relationship, analysis, and cleanup operation."
+                    ),
+                    rich_help_panel=PANEL_CORE,
+                ),
+            ] = None,
             # =================================================================
             # Neo4j Connection Options
             # =================================================================
@@ -545,7 +556,7 @@ class CLI:
                 bool,
                 typer.Option(
                     "--aws-best-effort-mode",
-                    help="Continue syncing other accounts if one fails, raising exceptions at the end.",
+                    help="Continue syncing other accounts if one fails and report a partial connector outcome.",
                     rich_help_panel=PANEL_AWS,
                     hidden=PANEL_AWS not in visible_panels,
                 ),
@@ -840,6 +851,15 @@ class CLI:
                     hidden=PANEL_GITHUB not in visible_panels,
                 ),
             ] = None,
+            github_best_effort_mode: Annotated[
+                bool,
+                typer.Option(
+                    "--github-best-effort-mode",
+                    help="Continue syncing remaining GitHub installations when one fails.",
+                    rich_help_panel=PANEL_GITHUB,
+                    hidden=PANEL_GITHUB not in visible_panels,
+                ),
+            ] = False,
             github_commit_lookback_days: Annotated[
                 int,
                 typer.Option(
@@ -2938,6 +2958,7 @@ class CLI:
                 neo4j_database=neo4j_database,
                 selected_modules=selected_modules,
                 update_tag=update_tag,
+                guard0_org_id=guard0_org_id,
                 aws_sync_all_profiles=aws_sync_all_profiles,
                 aws_regions=aws_regions,
                 aws_organization_account_ids=aws_organization_account_ids,
@@ -2964,6 +2985,7 @@ class CLI:
                 okta_base_domain=okta_base_domain,
                 okta_saml_role_regex=okta_saml_role_regex,
                 github_config=github_config,
+                github_best_effort_mode=github_best_effort_mode,
                 github_commit_lookback_days=github_commit_lookback_days,
                 digitalocean_token=digitalocean_token,
                 permission_relationships_file=permission_relationships_file,

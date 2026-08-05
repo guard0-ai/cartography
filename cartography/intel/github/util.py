@@ -122,6 +122,7 @@ def handle_rate_limit_sleep(token: str) -> None:
     response = requests.get(
         "https://api.github.com/rate_limit",
         headers={"Authorization": f"Bearer {_resolve_token(token)}"},
+        timeout=_TIMEOUT,
     )
     response.raise_for_status()
     response_json = response.json()

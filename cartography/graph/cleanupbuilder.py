@@ -153,7 +153,9 @@ def _build_cleanup_rel_query_no_sub_resource(
         >>> print(query)
         MATCH (n:AWSUser)
         MATCH (n)-[r:HAS_ROLE]->(...)
-        WHERE r.lastupdated <> $UPDATE_TAG
+        WHERE n.guard0_org_id = $GUARD0_ORG_ID
+            AND r.guard0_org_id = $GUARD0_ORG_ID
+            AND r.lastupdated <> $UPDATE_TAG
         WITH r LIMIT $LIMIT_SIZE
         DELETE r;
     """
@@ -167,7 +169,9 @@ def _build_cleanup_rel_query_no_sub_resource(
         """
         MATCH (n:$node_label)
         $selected_rel_clause
-        WHERE r.lastupdated <> $UPDATE_TAG
+        WHERE n.guard0_org_id = $GUARD0_ORG_ID
+            AND r.guard0_org_id = $GUARD0_ORG_ID
+            AND r.lastupdated <> $UPDATE_TAG
         WITH r LIMIT $LIMIT_SIZE
         DELETE r;
         """,
@@ -206,7 +210,7 @@ def _build_match_statement_for_cleanup(node_schema: CartographyNodeSchema) -> st
           with correct direction and matching clauses for scoped cleanup.
     """
     if not node_schema.sub_resource_relationship and not node_schema.scoped_cleanup:
-        template = Template("MATCH (n:$node_label)")
+        template = Template("MATCH (n:$node_label {guard0_org_id: $GUARD0_ORG_ID})")
         return template.safe_substitute(
             node_label=node_schema.label,
         )
@@ -214,7 +218,8 @@ def _build_match_statement_for_cleanup(node_schema: CartographyNodeSchema) -> st
     # if it has a sub resource relationship defined, we need to match on the sub resource to make sure we only delete
     # nodes that are attached to the sub resource.
     template = Template(
-        "MATCH (n:$node_label)$sub_resource_link(:$sub_resource_label{$match_sub_res_clause})"
+        "MATCH (n:$node_label {guard0_org_id: $GUARD0_ORG_ID})"
+        "$sub_resource_link(:$sub_resource_label{$match_sub_res_clause})"
     )
     sub_resource_link = ""
     sub_resource_label = ""
@@ -223,9 +228,13 @@ def _build_match_statement_for_cleanup(node_schema: CartographyNodeSchema) -> st
     if node_schema.sub_resource_relationship:
         # Draw sub resource rel with correct direction
         if node_schema.sub_resource_relationship.direction == LinkDirection.INWARD:
-            sub_resource_link_template = Template("<-[s:$SubResourceRelLabel]-")
+            sub_resource_link_template = Template(
+                "<-[s:$SubResourceRelLabel " "{guard0_org_id: $GUARD0_ORG_ID}]-"
+            )
         else:
-            sub_resource_link_template = Template("-[s:$SubResourceRelLabel]->")
+            sub_resource_link_template = Template(
+                "-[s:$SubResourceRelLabel " "{guard0_org_id: $GUARD0_ORG_ID}]->"
+            )
         sub_resource_link = sub_resource_link_template.safe_substitute(
             SubResourceRelLabel=node_schema.sub_resource_relationship.rel_label,
         )
@@ -277,7 +286,8 @@ def _build_cleanup_node_and_rel_queries(
         2
         >>> print(queries[0])  # Node cleanup query
         MATCH (n:AWSUser)<-[s:RESOURCE]-(sub:AWSAccount{id: $account_id})
-        WHERE n.lastupdated <> $UPDATE_TAG
+        WHERE n.guard0_org_id = $GUARD0_ORG_ID
+            AND n.lastupdated <> $UPDATE_TAG
         WITH n LIMIT $LIMIT_SIZE
         DETACH DELETE n;
 
@@ -315,18 +325,25 @@ def _build_cleanup_node_and_rel_queries(
         # - INWARD sub_resource means parent points to node, so node points to children (OUTWARD)
         # - OUTWARD sub_resource means node points to parent, so children point to node (INWARD)
         if node_schema.sub_resource_relationship.direction == LinkDirection.INWARD:
-            cascade_rel_clause = f"-[:{cascade_rel_label}]->"
+            cascade_rel_clause = (
+                f"-[:{cascade_rel_label} " "{guard0_org_id: $GUARD0_ORG_ID}]->"
+            )
         else:
-            cascade_rel_clause = f"<-[:{cascade_rel_label}]-"
+            cascade_rel_clause = (
+                f"<-[:{cascade_rel_label} " "{guard0_org_id: $GUARD0_ORG_ID}]-"
+            )
         # Use a unit subquery to delete many children without collecting them and without
         # risking the parent row being filtered out by OPTIONAL MATCH + WHERE.
         delete_action_clauses = [
             f"""
-        WHERE n.lastupdated <> $UPDATE_TAG
+        WHERE n.guard0_org_id = $GUARD0_ORG_ID
+            AND n.lastupdated <> $UPDATE_TAG
         WITH n LIMIT $LIMIT_SIZE
         CALL (n) {{
             OPTIONAL MATCH (n){cascade_rel_clause}(child)
-            WITH child WHERE child IS NOT NULL AND child.lastupdated <> $UPDATE_TAG
+            WITH child WHERE child IS NOT NULL
+                AND child.guard0_org_id = $GUARD0_ORG_ID
+                AND child.lastupdated <> $UPDATE_TAG
             DETACH DELETE child
         }}
         DETACH DELETE n;
@@ -335,7 +352,8 @@ def _build_cleanup_node_and_rel_queries(
     else:
         delete_action_clauses = [
             """
-        WHERE n.lastupdated <> $UPDATE_TAG
+        WHERE n.guard0_org_id = $GUARD0_ORG_ID
+            AND n.lastupdated <> $UPDATE_TAG
         WITH n LIMIT $LIMIT_SIZE
         DETACH DELETE n;
         """,
@@ -347,7 +365,9 @@ def _build_cleanup_node_and_rel_queries(
         )
         delete_action_clauses.append(
             """
-            WHERE s.lastupdated <> $UPDATE_TAG
+            WHERE n.guard0_org_id = $GUARD0_ORG_ID
+                AND s.guard0_org_id = $GUARD0_ORG_ID
+                AND s.lastupdated <> $UPDATE_TAG
             WITH s LIMIT $LIMIT_SIZE
             DELETE s;
             """,
@@ -355,7 +375,9 @@ def _build_cleanup_node_and_rel_queries(
     else:
         delete_action_clauses.append(
             """
-            WHERE r.lastupdated <> $UPDATE_TAG
+            WHERE n.guard0_org_id = $GUARD0_ORG_ID
+                AND r.guard0_org_id = $GUARD0_ORG_ID
+                AND r.lastupdated <> $UPDATE_TAG
             WITH r LIMIT $LIMIT_SIZE
             DELETE r;
             """,
@@ -412,7 +434,8 @@ def _build_cleanup_node_query_unscoped(
         >>> query = _build_cleanup_node_query_unscoped(node_schema)
         >>> print(query)
         MATCH (n:GlobalConfig)
-        WHERE n.lastupdated <> $UPDATE_TAG
+        WHERE n.guard0_org_id = $GUARD0_ORG_ID
+            AND n.lastupdated <> $UPDATE_TAG
         WITH n LIMIT $LIMIT_SIZE
         DETACH DELETE n;
 
@@ -493,7 +516,9 @@ def _build_cleanup_rel_queries_unscoped(
         )
 
     # The cleanup node query must always be before the cleanup rel query
-    delete_action_clause = """WHERE r.lastupdated <> $UPDATE_TAG
+    delete_action_clause = """WHERE n.guard0_org_id = $GUARD0_ORG_ID
+            AND r.guard0_org_id = $GUARD0_ORG_ID
+            AND r.lastupdated <> $UPDATE_TAG
         WITH r LIMIT $LIMIT_SIZE
         DELETE r;
         """
@@ -637,7 +662,10 @@ def build_cleanup_query_for_matchlink(rel_schema: CartographyRelSchema) -> str:
     query_template = Template(
         """
         MATCH (from:$source_node_label)$rel_direction[r:$rel_label]$rel_direction_end(to:$target_node_label)
-        WHERE r.lastupdated <> $UPDATE_TAG
+        WHERE from.guard0_org_id = $GUARD0_ORG_ID
+            AND to.guard0_org_id = $GUARD0_ORG_ID
+            AND r.guard0_org_id = $GUARD0_ORG_ID
+            AND r.lastupdated <> $UPDATE_TAG
             AND r._sub_resource_label = $sub_resource_label
             AND r._sub_resource_id = $sub_resource_id
         WITH r LIMIT $LIMIT_SIZE
