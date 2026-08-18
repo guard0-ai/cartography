@@ -93,3 +93,13 @@ class GitHubDependencySchema(CartographyNodeSchema):
     @property
     def scoped_cleanup(self) -> bool:
         return False
+
+    @property
+    def enforce_tenant_identity_uniqueness(self) -> bool:
+        # Dependency is a shared ontology label: other loaders (e.g. lockfile
+        # library schemas) create their own nodes carrying it as an extra
+        # label, and the same package name legitimately exists in multiple
+        # ecosystems. A tenant-scoped uniqueness constraint on the shared
+        # label rejects those loads, so this schema takes the lookup index
+        # instead of the constraint.
+        return False
