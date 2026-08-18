@@ -1,5 +1,6 @@
 import base64
 import logging
+import re
 from typing import Any
 
 import neo4j
@@ -26,6 +27,9 @@ from cartography.models.github.packaged_matchlink import (
     GitHubRepoProvenancePackagedFromMatchLink,
 )
 from cartography.models.github.packaged_matchlink import (
+    GitHubRepoTagRefPackagedFromMatchLink,
+)
+from cartography.models.github.packaged_matchlink import (
     ImagePackagedByWorkflowMatchLink,
 )
 from cartography.tenancy import current_guard0_org_id
@@ -42,6 +46,25 @@ _DEFAULT_MIN_MATCH_CONFIDENCE: float = 0.5
 # repo isn't guaranteed to be the build source — it's the repo that owns the
 # package, which usually but not always matches the build source.
 _PACKAGE_OWNER_FALLBACK_CONFIDENCE: float = 0.6
+
+# Confidences for image-tag -> Git-ref matching. A commit SHA embedded in an
+# image tag is near-unforgeable evidence; a version string matching a Git tag
+# in exactly one repo is strong; a version string found in several repos that
+# a registry/repo name comparison disambiguates is weaker but still specific.
+_TAG_SHA_CONFIDENCE: float = 0.95
+_TAG_SEMVER_UNIQUE_CONFIDENCE: float = 0.9
+_TAG_SEMVER_NAME_TIEBREAK_CONFIDENCE: float = 0.75
+
+# A version string at the start of an image tag, e.g. "1.2.3" or "v1.2.3-rc1".
+_SEMVER_IN_TAG_RE = re.compile(r"^v?(\d+\.\d+\.\d+)")
+# A hex fragment that plausibly embeds a commit SHA, e.g. "main-a1b2c3d".
+# Requires at least one a-f character so numeric build IDs don't false-match.
+_HEX_FRAGMENT_RE = re.compile(r"(?<![0-9a-fA-F])([0-9a-f]{7,40})(?![0-9a-fA-F])")
+
+# Ceiling on per-fragment commit-existence lookups against the GitHub API.
+# Candidate repos are ordered by registry/repo name similarity first, so the
+# true repo is nearly always probed within the first few requests.
+_MAX_COMMIT_LOOKUP_REPOS: int = 8
 
 
 def _get_unmatched_ghcr_image_owner_repos(
@@ -92,6 +115,208 @@ def _get_unmatched_ghcr_image_owner_repos(
 
 
 @timeit
+def get_unmatched_image_tag_rows(
+    neo4j_session: neo4j.Session,
+    organization: str,
+    update_tag: int,
+) -> list[dict[str, Any]]:
+    """
+    Query (image digest, image tag, registry name) rows for images that no
+    earlier matching stage has claimed in this sync iteration. Uses the
+    generic ontology labels so it works across registries, and applies the
+    same cross-organization guard as the Dockerfile stage. Requires only
+    registry metadata: no layer history or provenance fields.
+    """
+    query = """
+        MATCH (img:Image {guard0_org_id: $guard0_org_id})
+              <-[:IMAGE {guard0_org_id: $guard0_org_id}]-
+              (repo_img:ImageTag {guard0_org_id: $guard0_org_id})
+              <-[:REPO_IMAGE {guard0_org_id: $guard0_org_id}]-
+              (repo:ContainerRegistry {guard0_org_id: $guard0_org_id})
+        WHERE repo_img.tag IS NOT NULL
+          AND NOT exists((img)-[:PACKAGED_FROM {
+              guard0_org_id: $guard0_org_id,
+              lastupdated: $update_tag
+          }]->())
+          AND (
+              NOT exists((img)-[:PACKAGED_FROM {_sub_resource_label: 'GitHubOrganization'}]->())
+              OR exists((img)-[:PACKAGED_FROM {_sub_resource_id: $organization}]->())
+          )
+        RETURN DISTINCT
+            img.digest AS digest,
+            repo_img.tag AS tag,
+            repo.name AS registry_name
+    """
+    result = neo4j_session.run(
+        query,
+        guard0_org_id=current_guard0_org_id(),
+        update_tag=update_tag,
+        organization=organization,
+    )
+    return [dict(record) for record in result]
+
+
+def get_org_git_tags(
+    neo4j_session: neo4j.Session,
+    organization: str,
+) -> list[dict[str, Any]]:
+    """
+    Query the organization's Git tags (name, commit SHA, owning repo URL)
+    loaded by cartography.intel.github.tags.
+    """
+    query = """
+        MATCH (org:GitHubOrganization {guard0_org_id: $guard0_org_id, id: $org_url})
+              -[:RESOURCE {guard0_org_id: $guard0_org_id}]->
+              (tag:GitHubTag {guard0_org_id: $guard0_org_id})
+        RETURN tag.name AS name, tag.commit_sha AS commit_sha, tag.repo_url AS repo_url
+    """
+    result = neo4j_session.run(
+        query,
+        guard0_org_id=current_guard0_org_id(),
+        org_url=f"https://github.com/{organization}",
+    )
+    return [dict(record) for record in result]
+
+
+def _registry_repo_name_matches(registry_name: str | None, repo_url: str) -> bool:
+    """
+    Whether a container registry name plausibly refers to a Git repository,
+    e.g. registry "billing-service" and repo ".../billing". One name must be a
+    prefix of the other, so unrelated repos sharing a version don't tie.
+    """
+    if not registry_name:
+        return False
+    registry = registry_name.lower()
+    repo_name = repo_url.rstrip("/").rsplit("/", 1)[-1].lower()
+    return registry.startswith(repo_name) or repo_name.startswith(registry)
+
+
+def match_image_tags_to_git_refs(
+    image_rows: list[dict[str, Any]],
+    git_tags: list[dict[str, Any]],
+    commit_repo_lookup: Any = None,
+) -> list[dict[str, Any]]:
+    """
+    Resolve image tags to (repository, Git ref) matches.
+
+    For each image tag, evidence is tried in order of specificity:
+    1. tag_sha: a hex fragment in the image tag names a commit. Resolved
+       against Git-tag commit SHAs first, then (when provided) through
+       ``commit_repo_lookup``, a callable ``(fragment, ordered_repo_urls) ->
+       list[matching_repo_urls]`` backed by the GitHub commits API.
+    2. tag_semver: a version at the start of the image tag equals a Git tag
+       (ignoring a leading "v"). Unique across repos matches directly; a
+       registry/repo name comparison breaks ties.
+
+    Returns matchlink rows for GitHubRepoTagRefPackagedFromMatchLink. Emits at
+    most one match per image digest; ambiguous evidence produces no match.
+    """
+    tags_by_version: dict[str, set[str]] = {}
+    repos_by_sha: dict[str, set[str]] = {}
+    all_repo_urls: set[str] = set()
+    for git_tag in git_tags:
+        name, sha, repo_url = (
+            git_tag.get("name"),
+            git_tag.get("commit_sha"),
+            git_tag.get("repo_url"),
+        )
+        if not name or not repo_url:
+            continue
+        all_repo_urls.add(repo_url)
+        tags_by_version.setdefault(name.lstrip("vV"), set()).add(repo_url)
+        if sha:
+            repos_by_sha.setdefault(sha, set()).add(repo_url)
+
+    matches: dict[str, dict[str, Any]] = {}
+    fragment_cache: dict[str, list[str]] = {}
+
+    def emit(
+        digest: str, repo_url: str, method: str, ref: str, confidence: float
+    ) -> None:
+        matches[digest] = {
+            "image_digest": digest,
+            "repo_url": repo_url,
+            "match_method": method,
+            "matched_git_ref": ref,
+            "confidence": confidence,
+            "dockerfile_path": None,
+            "matched_commands": 0,
+            "total_commands": 0,
+            "command_similarity": 0.0,
+        }
+
+    for row in image_rows:
+        digest, image_tag = row.get("digest"), row.get("tag")
+        if not digest or not image_tag or digest in matches:
+            continue
+        registry_name = row.get("registry_name")
+
+        hex_match = _HEX_FRAGMENT_RE.search(image_tag)
+        fragment = hex_match.group(1) if hex_match else None
+        if fragment and not any(c in "abcdef" for c in fragment):
+            fragment = None
+        if fragment:
+            tagged = {
+                url
+                for sha, urls in repos_by_sha.items()
+                if sha.startswith(fragment)
+                for url in urls
+            }
+            if len(tagged) == 1:
+                emit(
+                    digest,
+                    next(iter(tagged)),
+                    "tag_sha",
+                    fragment,
+                    _TAG_SHA_CONFIDENCE,
+                )
+                continue
+            if not tagged and commit_repo_lookup is not None:
+                if fragment not in fragment_cache:
+                    ordered = sorted(
+                        all_repo_urls,
+                        key=lambda url: (
+                            not _registry_repo_name_matches(registry_name, url),
+                            url,
+                        ),
+                    )[:_MAX_COMMIT_LOOKUP_REPOS]
+                    fragment_cache[fragment] = commit_repo_lookup(fragment, ordered)
+                hits = fragment_cache[fragment]
+                if len(hits) == 1:
+                    emit(digest, hits[0], "tag_sha", fragment, _TAG_SHA_CONFIDENCE)
+                    continue
+
+        semver_match = _SEMVER_IN_TAG_RE.match(image_tag)
+        if semver_match:
+            version = semver_match.group(1)
+            candidates = tags_by_version.get(version, set())
+            if len(candidates) == 1:
+                emit(
+                    digest,
+                    next(iter(candidates)),
+                    "tag_semver",
+                    version,
+                    _TAG_SEMVER_UNIQUE_CONFIDENCE,
+                )
+                continue
+            if len(candidates) > 1:
+                named = {
+                    url
+                    for url in candidates
+                    if _registry_repo_name_matches(registry_name, url)
+                }
+                if len(named) == 1:
+                    emit(
+                        digest,
+                        next(iter(named)),
+                        "tag_semver",
+                        version,
+                        _TAG_SEMVER_NAME_TIEBREAK_CONFIDENCE,
+                    )
+
+    return list(matches.values())
+
+
 def get_unmatched_container_images_with_history(
     neo4j_session: neo4j.Session,
     organization: str,
@@ -445,11 +670,14 @@ def sync(
     """
     Sync supply chain relationships for a GitHub organization.
 
-    Uses a four-stage matching approach:
+    Uses a five-stage matching approach:
     1. PACKAGED_BY: Workflow provenance (Image -> GitHubWorkflow)
     2. PACKAGED_FROM (provenance): SLSA provenance-based matching (100% confidence)
-    3. PACKAGED_FROM (dockerfile): Dockerfile command matching for unmatched images
-    4. PACKAGED_FROM (package_owner_repo): For any GHCR image still without a
+    3. PACKAGED_FROM (tag_sha / tag_semver): image tags that embed a commit SHA
+       or version resolved against the org's Git refs — registry metadata only,
+       so it covers images whose config blobs are not readable
+    4. PACKAGED_FROM (dockerfile): Dockerfile command matching for unmatched images
+    5. PACKAGED_FROM (package_owner_repo): For any GHCR image still without a
        PACKAGED_FROM, link it to the repo that owns its GitHubPackage when the
        HAS_PACKAGE relation is unique. Lower confidence than the previous
        stages but deterministic (one repo per package per the GitHub API).
@@ -520,7 +748,58 @@ def sync(
             _sub_resource_id=organization,
         )
 
-    # 3. Get images WITHOUT existing PACKAGED_FROM for dockerfile analysis
+    # 3. PACKAGED_FROM (tag -> Git ref): resolve image tags that embed a
+    # version or commit SHA against the org's Git tags and commits. Works
+    # from registry metadata alone, so it provides provenance for images
+    # whose config blobs are not readable. Runs before Dockerfile analysis
+    # so matched images skip that more expensive stage.
+    image_tag_rows = get_unmatched_image_tag_rows(
+        neo4j_session,
+        organization,
+        update_tag,
+    )
+    if image_tag_rows:
+        org_git_tags = get_org_git_tags(neo4j_session, organization)
+
+        def commit_repo_lookup(
+            fragment: str, ordered_repo_urls: list[str]
+        ) -> list[str]:
+            hits: list[str] = []
+            for repo_url in ordered_repo_urls:
+                owner_repo = "/".join(repo_url.rstrip("/").rsplit("/", 2)[-2:])
+                try:
+                    call_github_rest_api(
+                        f"/repos/{owner_repo}/commits/{fragment}",
+                        token,
+                        api_url,
+                    )
+                except requests.exceptions.HTTPError:
+                    continue
+                hits.append(repo_url)
+                if len(hits) > 1:
+                    break
+            return hits
+
+        tag_ref_matches = match_image_tags_to_git_refs(
+            image_tag_rows,
+            org_git_tags,
+            commit_repo_lookup,
+        )
+        if tag_ref_matches:
+            logger.info(
+                "Loading %d tag-ref PACKAGED_FROM relationships",
+                len(tag_ref_matches),
+            )
+            load_matchlinks(
+                neo4j_session,
+                GitHubRepoTagRefPackagedFromMatchLink(),
+                tag_ref_matches,
+                lastupdated=update_tag,
+                _sub_resource_label="GitHubOrganization",
+                _sub_resource_id=organization,
+            )
+
+    # 4. Get images WITHOUT existing PACKAGED_FROM for dockerfile analysis
     unmatched = get_unmatched_container_images_with_history(
         neo4j_session,
         organization,
@@ -550,7 +829,7 @@ def sync(
             limit=remaining_limit,
         )
 
-    # 4. Dockerfile analysis (only for unmatched images)
+    # 5. Dockerfile analysis (only for unmatched images)
     if unmatched:
         dockerfiles = get_dockerfiles_for_repos(token, repos, organization, base_url)
         if dockerfiles:
@@ -578,7 +857,7 @@ def sync(
                         _sub_resource_id=organization,
                     )
 
-    # 5. PACKAGED_FROM (package-owner fallback): GHCR images still without a
+    # 6. PACKAGED_FROM (package-owner fallback): GHCR images still without a
     # PACKAGED_FROM after steps 1-4 inherit the repo that owns their package.
     package_owner_data = _get_unmatched_ghcr_image_owner_repos(
         neo4j_session,
@@ -608,7 +887,7 @@ def sync(
             _sub_resource_id=organization,
         )
 
-    # 6. Cleanup stale relationships
+    # 7. Cleanup stale relationships
     GraphJob.from_matchlink(
         ImagePackagedByWorkflowMatchLink(),
         "GitHubOrganization",
@@ -618,6 +897,13 @@ def sync(
 
     GraphJob.from_matchlink(
         GitHubRepoProvenancePackagedFromMatchLink(),
+        "GitHubOrganization",
+        organization,
+        update_tag,
+    ).run(neo4j_session)
+
+    GraphJob.from_matchlink(
+        GitHubRepoTagRefPackagedFromMatchLink(),
         "GitHubOrganization",
         organization,
         update_tag,
@@ -637,7 +923,7 @@ def sync(
         update_tag,
     ).run(neo4j_session)
 
-    # 7. Enrich PACKAGED_FROM with source_file from Image provenance
+    # 8. Enrich PACKAGED_FROM with source_file from Image provenance
     run_typed_analysis_job(
         SUPPLY_CHAIN_SOURCE_FILE,
         neo4j_session,

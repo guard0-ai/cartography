@@ -23,7 +23,9 @@ class GitHubRepoPackagedFromMatchLinkProperties(CartographyRelProperties):
     )
     _sub_resource_id: PropertyRef = PropertyRef("_sub_resource_id", set_in_kwargs=True)
 
-    # Match method: "provenance" (from SLSA attestation) or "dockerfile_analysis" (from command matching)
+    # Match method: "provenance" (from SLSA attestation), "dockerfile_analysis"
+    # (from command matching), "tag_sha" / "tag_semver" (image tag resolved
+    # against Git refs), or "package_owner_repo" (GHCR package ownership).
     match_method: PropertyRef = PropertyRef("match_method")
 
     # Dockerfile matching properties (only populated for dockerfile_analysis method)
@@ -32,6 +34,10 @@ class GitHubRepoPackagedFromMatchLinkProperties(CartographyRelProperties):
     matched_commands: PropertyRef = PropertyRef("matched_commands")
     total_commands: PropertyRef = PropertyRef("total_commands")
     command_similarity: PropertyRef = PropertyRef("command_similarity")
+
+    # Git ref evidence (only populated for tag_sha / tag_semver methods): the
+    # Git tag name or commit SHA the image tag was resolved against.
+    matched_git_ref: PropertyRef = PropertyRef("matched_git_ref")
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,36 @@ class GitHubRepoDockerfilePackagedFromMatchLink(CartographyRelSchema):
         {
             "digest": PropertyRef("image_digest"),
         }
+    )
+    direction: LinkDirection = LinkDirection.OUTWARD
+    rel_label: str = "PACKAGED_FROM"
+    properties: GitHubRepoPackagedFromMatchLinkProperties = (
+        GitHubRepoPackagedFromMatchLinkProperties()
+    )
+
+
+@dataclass(frozen=True)
+class GitHubRepoTagRefPackagedFromMatchLink(CartographyRelSchema):
+    """
+    MatchLink for Git-ref matching: (Image)-[:PACKAGED_FROM]->(GitHubRepository).
+
+    Matches Image.digest to the repo whose Git tag or commit the image's own
+    tag string resolves to (a version like "1.2.3" matched against Git tags,
+    or an embedded commit SHA). Works from registry metadata alone, so it
+    provides provenance for images whose config blobs are not readable.
+    """
+
+    target_node_label: str = "GitHubRepository"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {
+            "id": PropertyRef("repo_url"),
+        },
+    )
+    source_node_label: str = "Image"
+    source_node_matcher: SourceNodeMatcher = make_source_node_matcher(
+        {
+            "digest": PropertyRef("image_digest"),
+        },
     )
     direction: LinkDirection = LinkDirection.OUTWARD
     rel_label: str = "PACKAGED_FROM"

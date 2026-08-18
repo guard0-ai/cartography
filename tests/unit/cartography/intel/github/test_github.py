@@ -95,6 +95,7 @@ def test_start_github_ingestion_best_effort_continues_after_installation_failure
         cleanup_safe=True,
     ),
 )
+@patch("cartography.intel.github.tags.sync_repo_tags")
 @patch("cartography.intel.github.repos.get", return_value=[])
 @patch("cartography.intel.github.commits.sync_github_commits")
 @patch("cartography.intel.github._get_repos_from_graph", return_value=[])
@@ -118,6 +119,7 @@ def test_start_github_ingestion_defers_global_cleanup_until_after_all_orgs(
     mock_get_repos_from_graph: Mock,
     mock_sync_github_commits: Mock,
     mock_get_repos: Mock,
+    mock_tags_sync: Mock,
     mock_packages_sync: Mock,
     mock_container_images_sync: Mock,
     mock_container_tags_sync: Mock,
@@ -244,6 +246,7 @@ def test_start_github_ingestion_defers_global_cleanup_until_after_all_orgs(
         cleanup_safe=True,
     ),
 )
+@patch("cartography.intel.github.tags.sync_repo_tags")
 @patch("cartography.intel.github.repos.get", return_value=[])
 @patch("cartography.intel.github.commits.sync_github_commits")
 @patch("cartography.intel.github._get_repos_from_graph", return_value=[])
@@ -267,6 +270,7 @@ def test_start_github_ingestion_can_skip_unscoped_cleanup(
     mock_get_repos_from_graph: Mock,
     mock_sync_github_commits: Mock,
     mock_get_repos: Mock,
+    mock_tags_sync: Mock,
     mock_packages_sync: Mock,
     mock_container_images_sync: Mock,
     mock_container_tags_sync: Mock,

@@ -17,6 +17,7 @@ import cartography.intel.github.dependabot_alerts
 import cartography.intel.github.packages
 import cartography.intel.github.personal_access_tokens
 import cartography.intel.github.repos
+import cartography.intel.github.tags
 import cartography.intel.github.supply_chain
 import cartography.intel.github.teams
 import cartography.intel.github.users
@@ -291,6 +292,18 @@ def start_github_ingestion(
         )
         # Filter out None entries
         valid_repos = [r for r in repos_json if r is not None]
+
+        # Sync Git tags before supply_chain.sync so image tags that embed a
+        # version or commit SHA can be resolved to a repository and commit.
+        cartography.intel.github.tags.sync_repo_tags(
+            neo4j_session,
+            token,
+            api_url,
+            org_name,
+            valid_repos,
+            common_job_parameters["UPDATE_TAG"],
+            common_job_parameters,
+        )
 
         # Sync GHCR (container packages, image manifests, tags, attestations).
         # Runs before supply_chain.sync so the latter can correlate digests.
