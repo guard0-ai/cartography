@@ -625,8 +625,11 @@ def _build_where_clause_for_rel_match(
     fuzzy_and_ignorecase_match = Template(
         "toLower($node_var.$key) CONTAINS toLower($prop_ref)"
     )
-    # This assumes that item.$prop_ref points to a list available on the data object
-    one_to_many_match = Template("$node_var.$key IN $prop_ref")
+    # This assumes that item.$prop_ref points to a list available on the data
+    # object. coalesce() guards records where the list field is null or absent:
+    # tenant-scoped composite indexes make the planner use an index seek here,
+    # which raises CypherTypeError on null instead of matching nothing.
+    one_to_many_match = Template("$node_var.$key IN coalesce($prop_ref, [])")
 
     matcher_asdict = asdict(matcher)
 
@@ -1939,8 +1942,7 @@ def build_matchlink_query(rel_schema: CartographyRelSchema) -> str:
     sub_resource_match_statements: list[str] = []
 
     if source_sub_resource or target_sub_resource:
-        matchlink_query_template = Template(
-            """
+        matchlink_query_template = Template("""
         $sub_resource_match
         UNWIND $DictList as item
             $source_match
@@ -1951,8 +1953,7 @@ def build_matchlink_query(rel_schema: CartographyRelSchema) -> str:
                 r._module_name = "$module_name",
                 r._module_version = "$module_version",
                 $set_rel_properties_statement;
-        """
-        )
+        """)
         if (
             source_sub_resource
             and target_sub_resource
@@ -1983,8 +1984,7 @@ def build_matchlink_query(rel_schema: CartographyRelSchema) -> str:
                     ),
                 )
     else:
-        matchlink_query_template = Template(
-            """
+        matchlink_query_template = Template("""
         UNWIND $DictList as item
             $source_match
             $target_match
@@ -1994,8 +1994,7 @@ def build_matchlink_query(rel_schema: CartographyRelSchema) -> str:
                 r._module_name = "$module_name",
                 r._module_version = "$module_version",
                 $set_rel_properties_statement;
-        """
-        )
+        """)
     sub_resource_match = "\n        ".join(sub_resource_match_statements)
 
     source_match = _build_matchlink_endpoint_match(

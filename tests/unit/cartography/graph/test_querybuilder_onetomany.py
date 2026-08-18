@@ -41,7 +41,7 @@ def test_build_ingestion_query_onetomany():
             UNION
             OPTIONAL MATCH (n0:AWSRole)
             WHERE
-                n0.arn IN item.Roles
+                n0.arn IN coalesce(item.Roles, [])
 
             WITH i, item, n0 WHERE n0 IS NOT NULL
             MERGE (i)-[r0:ASSOCIATED_WITH]->(n0)
