@@ -329,12 +329,23 @@ async def get_blob_json_via_presigned(
             layerDigest=digest,
         )
     except ClientError as error:
+        error_code = error.response.get("Error", {}).get("Code", "")
+        if error_code in {"AccessDenied", "AccessDeniedException"}:
+            logger.warning(
+                "Skipping blob download for layer %s in repo %s due to %s "
+                "(missing ecr:GetDownloadUrlForLayer permission); "
+                "provenance for this image will rely on non-blob evidence",
+                digest,
+                repo,
+                error_code,
+            )
+            return {}
         if _is_retryable_aws_client_error(error):
             logger.warning(
                 "Transient AWS error requesting blob download URL for layer %s in repo %s: %s",
                 digest,
                 repo,
-                error.response.get("Error", {}).get("Code", "unknown"),
+                error_code or "unknown",
             )
             raise ECRLayerFetchTransientError(
                 f"Transient download URL failure for {repo}@{digest}"
@@ -343,7 +354,7 @@ async def get_blob_json_via_presigned(
             "Failed to request download URL for layer %s in repo %s: %s",
             digest,
             repo,
-            error.response.get("Error", {}).get("Code", "unknown"),
+            error_code or "unknown",
         )
         raise
 

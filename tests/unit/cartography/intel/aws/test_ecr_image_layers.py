@@ -362,6 +362,32 @@ def test_batch_get_manifest_access_denied_returns_empty_result(error_code):
     assert media_type == ""
 
 
+@pytest.mark.parametrize("error_code", ["AccessDenied", "AccessDeniedException"])
+def test_get_blob_json_via_presigned_access_denied_returns_empty_result(error_code):
+    """Test that access-denied errors are non-fatal when requesting blob URLs."""
+    mock_ecr_client = AsyncMock()
+    mock_ecr_client.get_download_url_for_layer.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": error_code,
+                "Message": "Not authorized to perform ecr:GetDownloadUrlForLayer",
+            }
+        },
+        "GetDownloadUrlForLayer",
+    )
+
+    blob = asyncio.run(
+        get_blob_json_via_presigned(
+            mock_ecr_client,
+            "example/repository",
+            "sha256:12345",
+            AsyncMock(),
+        )
+    )
+
+    assert blob == {}
+
+
 def test_batch_get_manifest_transient_aws_error_raises_skip_signal():
     mock_ecr_client = AsyncMock()
     mock_ecr_client.batch_get_image.side_effect = ClientError(
