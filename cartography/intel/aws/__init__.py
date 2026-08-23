@@ -20,7 +20,6 @@ from cartography.analysis.aws.analysis import AWS_EC2_KEYPAIR_ANALYSIS_JOBS
 from cartography.analysis.aws.analysis import AWS_ECS_ASSET_EXPOSURE
 from cartography.analysis.aws.analysis import AWS_EKS_ASSET_EXPOSURE
 from cartography.analysis.aws.analysis import AWS_FOREIGN_ACCOUNTS
-from cartography.analysis.aws.analysis import AWS_LAMBDA_ECR
 from cartography.analysis.aws.analysis import AWS_LB_CONTAINER_EXPOSURE
 from cartography.analysis.aws.analysis import AWS_LB_NACL_DIRECT
 from cartography.config import Config
@@ -200,12 +199,6 @@ def _sync_one_account(
 
     run_typed_analysis_job(
         AWS_EC2_IAM_INSTANCE_PROFILE,
-        neo4j_session,
-        common_job_parameters,
-    )
-
-    run_typed_analysis_job(
-        AWS_LAMBDA_ECR,
         neo4j_session,
         common_job_parameters,
     )

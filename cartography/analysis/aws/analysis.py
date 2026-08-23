@@ -27,28 +27,6 @@ AWS_EC2_IAM_INSTANCE_PROFILE = AnalysisJob(
         ),
     ),
 )
-AWS_LAMBDA_ECR = AnalysisJob(
-    name="Lambda functions with ECR images",
-    short_name="aws_lambda_ecr",
-    statements=(
-        AnalysisStatement(
-            match="""
-            MATCH (lmbda:AWSLambda)
-            MATCH (e:AWSECRImage)
-            WHERE e.digest = 'sha256:' + lmbda.codesha256
-            """,
-            effects=(
-                AddRelationship(
-                    "lmbda",
-                    "HAS",
-                    "e",
-                    source_label="AWSLambda",
-                    target_label="AWSECRImage",
-                ),
-            ),
-        ),
-    ),
-)
 AWS_LB_CONTAINER_EXPOSURE = AnalysisJob(
     name="AWS LoadBalancer to ECS Container direct relationship",
     short_name="aws_lb_container_exposure",
