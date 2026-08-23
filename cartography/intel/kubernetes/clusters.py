@@ -27,6 +27,8 @@ def get_kubernetes_cluster_version(client: K8sClient) -> VersionInfo:
 
 @timeit
 def get_kubernetes_cluster_tls_diagnostics(client: K8sClient) -> dict[str, Any]:
+    if client.tls_diagnostics is not None:
+        return client.tls_diagnostics
     return get_kubeconfig_tls_diagnostics(client.name, client.config_file)
 
 

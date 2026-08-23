@@ -102,15 +102,24 @@ class K8sClient:
         name: str,
         config_file: str,
         external_id: str | None = None,
+        api_client: ApiClient | None = None,
+        tls_diagnostics: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.config_file = config_file
         self.external_id = external_id
-        self.core = K8CoreApiClient(self.name, self.config_file)
-        self.networking = K8NetworkingApiClient(self.name, self.config_file)
-        self.version = K8VersionApiClient(self.name, self.config_file)
-        self.rbac = K8RbacApiClient(self.name, self.config_file)
-        self.custom = K8CustomObjectsApiClient(self.name, self.config_file)
+        self.tls_diagnostics = tls_diagnostics
+        self.core = K8CoreApiClient(self.name, self.config_file, api_client=api_client)
+        self.networking = K8NetworkingApiClient(
+            self.name, self.config_file, api_client=api_client
+        )
+        self.version = K8VersionApiClient(
+            self.name, self.config_file, api_client=api_client
+        )
+        self.rbac = K8RbacApiClient(self.name, self.config_file, api_client=api_client)
+        self.custom = K8CustomObjectsApiClient(
+            self.name, self.config_file, api_client=api_client
+        )
 
 
 def get_k8s_clients(kubeconfig: str) -> list[K8sClient]:
