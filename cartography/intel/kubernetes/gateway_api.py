@@ -71,6 +71,16 @@ def _list_cluster_custom_objects(
                 )
                 return []
 
+            if err.status in (401, 403):
+                logger.warning(
+                    "Skipping %s for cluster %s: access denied (status %s). "
+                    "The cluster's read grant does not cover this resource.",
+                    resource_name,
+                    client.name,
+                    err.status,
+                )
+                return []
+
             logger.warning(
                 "Failed to fetch %s resources for cluster %s: %s",
                 resource_name,

@@ -28,11 +28,26 @@ def test_list_cluster_custom_objects_returns_empty_on_missing_crd():
     assert resources == []
 
 
-@pytest.mark.parametrize("status", [401, 403, 500])
-def test_list_cluster_custom_objects_raises_on_non_404_errors(status):
+@pytest.mark.parametrize("status", [401, 403])
+def test_list_cluster_custom_objects_returns_empty_on_access_denied(status):
     client = MagicMock()
     client.name = "test-cluster"
     client.custom.list_cluster_custom_object.side_effect = ApiException(status=status)
+
+    resources = _list_cluster_custom_objects(
+        client,
+        group="gateway.networking.k8s.io",
+        version="v1",
+        plural="gateways",
+    )
+
+    assert resources == []
+
+
+def test_list_cluster_custom_objects_raises_on_server_errors():
+    client = MagicMock()
+    client.name = "test-cluster"
+    client.custom.list_cluster_custom_object.side_effect = ApiException(status=500)
 
     with pytest.raises(ApiException):
         _list_cluster_custom_objects(
