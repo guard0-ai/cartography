@@ -23,6 +23,7 @@ from cartography.intel.kubernetes.secrets import sync_secrets
 from cartography.intel.kubernetes.services import sync_services
 from cartography.intel.kubernetes.util import get_k8s_clients
 from cartography.intel.kubernetes.util import K8sClient
+from cartography.intel.kubernetes.util import track_denied_resources
 from cartography.util import run_typed_analysis_job
 from cartography.util import timeit
 
@@ -96,18 +97,29 @@ def _sync_discovered_eks_clusters(
         )
     succeeded = 0
     failed = 0
+    degraded = 0
     for discovered in clusters:
         logger.info(f"Syncing data for discovered EKS cluster {discovered.name}...")
         try:
-            _sync_cluster(
-                session,
-                discovered.client,
-                config,
-                common_job_parameters,
-                is_eks=True,
-                boto3_session=discovered.boto3_session,
-            )
+            with track_denied_resources() as denied:
+                _sync_cluster(
+                    session,
+                    discovered.client,
+                    config,
+                    common_job_parameters,
+                    is_eks=True,
+                    boto3_session=discovered.boto3_session,
+                )
             succeeded += 1
+            if denied:
+                degraded += 1
+                logger.warning(
+                    "Cluster %s synced with %d resource type(s) skipped for "
+                    "missing read access: %s",
+                    discovered.name,
+                    len(denied),
+                    ", ".join(sorted(denied)),
+                )
         except Exception:
             failed += 1
             logger.exception(
@@ -120,6 +132,7 @@ def _sync_discovered_eks_clusters(
             attempted=len(clusters),
             succeeded=succeeded,
             failed=failed,
+            degraded=degraded,
         ),
     )
 

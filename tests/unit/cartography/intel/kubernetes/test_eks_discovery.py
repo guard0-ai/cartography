@@ -178,3 +178,45 @@ def test_discovery_sync_is_best_effort_and_reports_outcome(monkeypatch):
     assert outcomes[0].attempted == 2
     assert outcomes[0].succeeded == 1
     assert outcomes[0].failed == 1
+    assert outcomes[0].degraded == 0
+
+
+def test_discovery_sync_reports_degraded_clusters(monkeypatch):
+    from cartography.intel.kubernetes.util import record_denied_resource
+
+    clusters = [
+        DiscoveredEKSCluster(
+            name=f"cluster-{index}",
+            arn=f"arn:aws:eks:us-east-1:111122223333:cluster/cluster-{index}",
+            region=REGION,
+            client=SimpleNamespace(name=f"cluster-{index}"),
+            boto3_session=MagicMock(),
+        )
+        for index in range(2)
+    ]
+    monkeypatch.setattr(
+        kubernetes, "discover_eks_clusters", lambda *args, **kwargs: clusters
+    )
+
+    def _sync_cluster(session, client, config, params, is_eks, boto3_session=None):
+        if client.name == "cluster-0":
+            record_denied_resource("gateway.networking.k8s.io/v1/gateways")
+
+    monkeypatch.setattr(kubernetes, "_sync_cluster", _sync_cluster)
+    outcomes = []
+    monkeypatch.setattr(
+        kubernetes, "emit_connector_outcome", lambda outcome: outcomes.append(outcome)
+    )
+
+    config = SimpleNamespace(
+        update_tag=123456789,
+        k8s_kubeconfig=None,
+        managed_kubernetes=None,
+        aws_sync_all_profiles=False,
+        aws_regions=None,
+    )
+    kubernetes.start_k8s_ingestion(MagicMock(), config)
+
+    assert outcomes[0].succeeded == 2
+    assert outcomes[0].failed == 0
+    assert outcomes[0].degraded == 1

@@ -10,6 +10,7 @@ from cartography.intel.kubernetes.util import get_epoch
 from cartography.intel.kubernetes.util import get_qualified_resource_name
 from cartography.intel.kubernetes.util import K8sClient
 from cartography.intel.kubernetes.util import parse_rfc3339
+from cartography.intel.kubernetes.util import record_denied_resource
 from cartography.models.kubernetes.gateway_api import KubernetesGatewaySchema
 from cartography.models.kubernetes.gateway_api import KubernetesHTTPRouteSchema
 from cartography.util import timeit
@@ -79,6 +80,7 @@ def _list_cluster_custom_objects(
                     client.name,
                     err.status,
                 )
+                record_denied_resource(resource_name)
                 return []
 
             logger.warning(

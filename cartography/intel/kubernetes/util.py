@@ -1,7 +1,10 @@
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 from typing import Callable
+from typing import Iterator
 
 from dateutil.parser import isoparse
 from kubernetes import config
@@ -19,6 +22,30 @@ logger = logging.getLogger(__name__)
 
 class KubernetesContextNotFound(Exception):
     pass
+
+
+# Names of resources the current cluster's credentials were denied, collected
+# while a single cluster syncs and drained by the module entry point to report
+# the cluster as degraded rather than silently incomplete.
+_denied_resources: ContextVar[set[str] | None] = ContextVar(
+    "cartography_k8s_denied_resources", default=None
+)
+
+
+def record_denied_resource(resource_name: str) -> None:
+    denied = _denied_resources.get()
+    if denied is not None:
+        denied.add(resource_name)
+
+
+@contextmanager
+def track_denied_resources() -> Iterator[set[str]]:
+    denied: set[str] = set()
+    token = _denied_resources.set(denied)
+    try:
+        yield denied
+    finally:
+        _denied_resources.reset(token)
 
 
 class K8CoreApiClient(CoreV1Api):
@@ -296,8 +323,10 @@ def k8s_paginate(
                 break
 
         except ApiException as e:
-            if raise_on_forbidden and e.status in (401, 403):
-                raise
+            if e.status in (401, 403):
+                if raise_on_forbidden:
+                    raise
+                record_denied_resource(function_name)
             logger.error(
                 f"Kubernetes API error retrieving {function_name} resources. {e}: {e.status} - {e.reason}"
             )

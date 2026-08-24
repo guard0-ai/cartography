@@ -28,4 +28,5 @@ def test_emit_connector_outcome_writes_bounded_non_secret_event(monkeypatch) -> 
         "attempted": 3,
         "succeeded": 2,
         "failed": 1,
+        "degraded": 0,
     }

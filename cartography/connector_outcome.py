@@ -15,6 +15,9 @@ class ConnectorOutcome:
     attempted: int
     succeeded: int
     failed: int
+    # Connectors that synced but skipped resources their credentials could not
+    # read. Always <= succeeded; 0 for providers that do not report it.
+    degraded: int = 0
 
 
 def emit_connector_outcome(outcome: ConnectorOutcome) -> None:
