@@ -16,6 +16,7 @@ from cartography.graph.cleanupbuilder import build_cleanup_queries
 from cartography.graph.cleanupbuilder import build_cleanup_query_for_matchlink
 from cartography.graph.statement import get_job_shortname
 from cartography.graph.statement import GraphStatement
+from cartography.tenancy import GUARD0_ORG_PARAMETER
 from cartography.models.core.nodes import CartographyNodeSchema
 from cartography.models.core.relationships import CartographyRelSchema
 
@@ -370,6 +371,9 @@ class GraphJob:
         actual_param_keys: Set[str] = set(parameters.keys())
         # Hacky, but LIMIT_SIZE is specified by default in cartography.graph.statement, so we exclude it from validation
         actual_param_keys.add("LIMIT_SIZE")
+        # GUARD0_ORG_ID is injected into every statement's parameters at run
+        # time by add_guard0_org_parameter, so callers need not pass it.
+        actual_param_keys.add(GUARD0_ORG_PARAMETER)
 
         missing_params: Set[str] = expected_param_keys - actual_param_keys
 

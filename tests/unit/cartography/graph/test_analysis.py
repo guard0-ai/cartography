@@ -107,6 +107,27 @@ def test_all_typed_analysis_jobs_compile_with_guard0_tenant_scope():
                 )
 
 
+def test_tenant_scope_never_adds_node_properties_inside_merge():
+    # Neo4j rejects a property map on an already-bound variable in MERGE, and
+    # every AddRelationship effect merges between variables bound by the scoped
+    # MATCH prefix. Relationship patterns in MERGE must still carry the tenant
+    # property.
+    import re
+
+    node_with_props_in_merge = re.compile(r"\([A-Za-z_][A-Za-z0-9_]*\s*\{")
+    with guard0_tenant_scope("guard0-org"):
+        for job in _analysis_jobs():
+            graph_job = to_graph_job(job)
+            for statement in graph_job.statements:
+                for line in statement.query.split("\n"):
+                    if not line.strip().upper().startswith("MERGE"):
+                        continue
+                    assert not node_with_props_in_merge.search(line), (
+                        f"{job.short_name or job.name} scoped a bound node "
+                        f"inside MERGE: {line.strip()}"
+                    )
+
+
 def test_relationship_job_appends_cleanup_statement():
     # Arrange
     job = AnalysisJob(

@@ -228,12 +228,23 @@ def _scope_relationship(match: re.Match[str]) -> str:
     )
 
 
+_MERGE_LINE_PATTERN = re.compile(r"^\s*MERGE\b", re.IGNORECASE)
+
+
 def _tenant_scope_patterns(query: str) -> str:
     if not guard0_scope_required():
         return query
-    scoped = _TENANT_NODE_PATTERN.sub(_scope_labeled_node, query)
-    scoped = _TENANT_BARE_NODE_PATTERN.sub(_scope_bare_node, scoped)
-    return _TENANT_RELATIONSHIP_PATTERN.sub(_scope_relationship, scoped)
+    scoped_lines = []
+    for line in query.split("\n"):
+        if not _MERGE_LINE_PATTERN.match(line):
+            line = _TENANT_NODE_PATTERN.sub(_scope_labeled_node, line)
+            line = _TENANT_BARE_NODE_PATTERN.sub(_scope_bare_node, line)
+        # MERGE lines skip node scoping: their node variables are bound by the
+        # already-scoped MATCH prefix, and Neo4j rejects property maps on bound
+        # variables in MERGE. The relationship pattern is still scoped so the
+        # created edge carries the tenant property.
+        scoped_lines.append(_TENANT_RELATIONSHIP_PATTERN.sub(_scope_relationship, line))
+    return "\n".join(scoped_lines)
 
 
 def _validate_identifier(value: str, description: str) -> str:
