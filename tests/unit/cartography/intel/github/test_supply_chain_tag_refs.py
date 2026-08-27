@@ -1,3 +1,4 @@
+from cartography.intel.github.supply_chain import _extract_workflow_image_names
 from cartography.intel.github.supply_chain import _registry_repo_match_rank
 from cartography.intel.github.supply_chain import _registry_repo_name_matches
 from cartography.intel.github.supply_chain import match_image_tags_to_git_refs
@@ -155,9 +156,85 @@ def test_registry_repo_name_matches():
 def test_registry_match_rank_tiers():
     assert _registry_repo_match_rank("billing", f"{ORG}/billing") == 0
     assert _registry_repo_match_rank("acme-prod-docker/billing", f"{ORG}/billing") == 0
-    assert _registry_repo_match_rank("billing-service", f"{ORG}/billing") == 1
-    assert _registry_repo_match_rank("worker-billing", f"{ORG}/billing") == 2
+    assert _registry_repo_match_rank("billing", f"{ORG}/money-core", {"billing"}) == 1
+    assert _registry_repo_match_rank("billing-service", f"{ORG}/billing") == 2
+    assert _registry_repo_match_rank("worker-billing", f"{ORG}/billing") == 3
     assert _registry_repo_match_rank("unrelated", f"{ORG}/billing") is None
+
+
+def test_extract_workflow_image_names():
+    text = """
+    env:
+      DOCKER_IMAGE_NAME: ${{ inputs.docker_image_name || 'billing-api' }}
+    steps:
+      - run: |
+          ECR_REPO="${{ env.AWS_ECR_REGISTRY }}/shield-train"
+          docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/acme-prod/ledger:v1
+          docker push ghcr.io/acme/frontend:latest
+          docker tag $ECR_REGISTRY/payments:$TAG something
+    """
+    names = _extract_workflow_image_names(text)
+    assert names == {"billing-api", "shield-train", "ledger", "frontend", "payments"}
+
+
+def test_semver_collision_resolved_by_workflow_declared_name():
+    git_tags = [
+        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/money-core"},
+        {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/ledger"},
+    ]
+    rows = [
+        {"digest": "sha256:d30", "tag": "0.0.7", "registry_name": "billing-api"},
+    ]
+
+    def workflow_names(repo_url):
+        return {"billing-api"} if repo_url == f"{ORG}/money-core" else set()
+
+    matches = match_image_tags_to_git_refs(
+        rows, git_tags, workflow_names_lookup=workflow_names
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["repo_url"] == f"{ORG}/money-core"
+
+
+def test_semver_collision_workflow_declaration_beats_prefix():
+    git_tags = [
+        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/money-core"},
+        {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/billing"},
+    ]
+    rows = [
+        {"digest": "sha256:d31", "tag": "0.0.7", "registry_name": "billing-api"},
+    ]
+
+    def workflow_names(repo_url):
+        return {"billing-api"} if repo_url == f"{ORG}/money-core" else set()
+
+    matches = match_image_tags_to_git_refs(
+        rows, git_tags, workflow_names_lookup=workflow_names
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["repo_url"] == f"{ORG}/money-core"
+
+
+def test_semver_collision_exact_name_beats_workflow_declaration():
+    git_tags = [
+        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/billing"},
+        {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/money-core"},
+    ]
+    rows = [
+        {"digest": "sha256:d32", "tag": "0.0.7", "registry_name": "billing"},
+    ]
+
+    def workflow_names(repo_url):
+        return {"billing"} if repo_url == f"{ORG}/money-core" else set()
+
+    matches = match_image_tags_to_git_refs(
+        rows, git_tags, workflow_names_lookup=workflow_names
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["repo_url"] == f"{ORG}/billing"
 
 
 def test_semver_collision_resolved_for_namespaced_registry():
@@ -212,7 +289,11 @@ def test_semver_collision_exact_name_beats_token_subset():
 
 def test_semver_collision_ambiguous_within_strongest_rank_is_not_matched():
     git_tags = [
-        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/billing-service"},
+        {
+            "name": "v0.0.7",
+            "commit_sha": "1" * 40,
+            "repo_url": f"{ORG}/billing-service",
+        },
         {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/billing-ui"},
     ]
     rows = [

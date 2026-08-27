@@ -66,6 +66,9 @@ _HEX_FRAGMENT_RE = re.compile(r"(?<![0-9a-fA-F])([0-9a-f]{7,40})(?![0-9a-fA-F])"
 # true repo is nearly always probed within the first few requests.
 _MAX_COMMIT_LOOKUP_REPOS: int = 8
 
+# Cap workflow-file fetches per repository during semver tiebreaks.
+_MAX_WORKFLOW_FILES_PER_REPO: int = 20
+
 
 def _get_unmatched_ghcr_image_owner_repos(
     neo4j_session: neo4j.Session,
@@ -178,16 +181,69 @@ def get_org_git_tags(
     return [dict(record) for record in result]
 
 
-def _registry_repo_match_rank(registry_name: str | None, repo_url: str) -> int | None:
+# Registry hosts whose URL paths name an image, for workflow image extraction.
+_WORKFLOW_REGISTRY_URL_RE = re.compile(
+    r"(?:\d+\.dkr\.ecr\.[\w-]+\.amazonaws\.com|ghcr\.io|(?:[\w-]+\.)?gcr\.io"
+    r"|[\w-]+-docker\.pkg\.dev/[\w-]+/[\w-]+|[\w-]+\.azurecr\.io)"
+    r"/([\w][\w./_-]*)"
+)
+# A literal image name appended to a registry-valued variable, e.g.
+# "${{ env.AWS_ECR_REGISTRY }}/billing" or "$ECR_REGISTRY/billing".
+_WORKFLOW_VARIABLE_REGISTRY_RE = re.compile(
+    r"\$(?:\{\{[^}]*(?:REGISTRY|ECR)[^}]*\}\}|\{?[A-Za-z_]*(?:REGISTRY|ECR)[A-Za-z_]*\}?)"
+    r"[\"']?/([A-Za-z0-9][\w.-]*)"
+)
+# Values assigned to image-name keys, e.g. "DOCKER_IMAGE_NAME: billing" or
+# "IMAGE_NAME: ${{ inputs.name || 'billing' }}".
+_WORKFLOW_IMAGE_KEY_RE = re.compile(
+    r"(?:DOCKER_IMAGE_NAME|IMAGE_NAME|ECR_REPOSITORY|ECR_REPO)\s*:\s*(.+)",
+    re.IGNORECASE,
+)
+_WORKFLOW_QUOTED_NAME_RE = re.compile(r"[\"']([\w][\w./-]*)[\"']")
+_WORKFLOW_BARE_NAME_RE = re.compile(r"^([A-Za-z0-9][\w./-]*)$")
+
+
+def _extract_workflow_image_names(text: str) -> set[str]:
+    """
+    Image names a workflow file declares, as lowercase basenames. Sources:
+    paths on known registry hosts, literal names appended to registry-valued
+    variables, and values of image-name keys (including quoted defaults).
+    """
+    names: set[str] = set()
+
+    def add(raw: str) -> None:
+        basename = raw.split(":", 1)[0].rstrip("/").rsplit("/", 1)[-1].lower()
+        if basename:
+            names.add(basename)
+
+    for match in _WORKFLOW_REGISTRY_URL_RE.finditer(text):
+        add(match.group(1))
+    for match in _WORKFLOW_VARIABLE_REGISTRY_RE.finditer(text):
+        add(match.group(1))
+    for match in _WORKFLOW_IMAGE_KEY_RE.finditer(text):
+        value = match.group(1).strip()
+        for quoted in _WORKFLOW_QUOTED_NAME_RE.finditer(value):
+            add(quoted.group(1))
+        bare = _WORKFLOW_BARE_NAME_RE.match(value)
+        if bare:
+            add(bare.group(1))
+    return names
+
+
+def _registry_repo_match_rank(
+    registry_name: str | None,
+    repo_url: str,
+    declared_names: set[str] | None = None,
+) -> int | None:
     """
     Rank how strongly a container registry name refers to a Git repository,
-    strongest first: 0 the names are equal, 1 one name is a prefix of the
-    other (registry "billing-service", repo ".../billing"), 2 one name's
-    hyphen/underscore tokens are a subset of the other's (registry
-    "worker-billing", repo ".../billing"). None means no correspondence.
-    Only the registry name's last path segment is compared, because registry
-    namespaces ("acme-prod-docker/billing") describe the environment, not the
-    service.
+    strongest first: 0 the names are equal, 1 the repository's workflows
+    declare the image name, 2 one name is a prefix of the other (registry
+    "billing-service", repo ".../billing"), 3 one name's hyphen/underscore
+    tokens are a subset of the other's (registry "worker-billing", repo
+    ".../billing"). None means no correspondence. Only the registry name's
+    last path segment is compared, because registry namespaces
+    ("acme-prod-docker/billing") describe the environment, not the service.
     """
     if not registry_name:
         return None
@@ -195,13 +251,15 @@ def _registry_repo_match_rank(registry_name: str | None, repo_url: str) -> int |
     repo_name = repo_url.rstrip("/").rsplit("/", 1)[-1].lower()
     if registry == repo_name:
         return 0
-    if registry.startswith(repo_name) or repo_name.startswith(registry):
+    if declared_names and registry in declared_names:
         return 1
+    if registry.startswith(repo_name) or repo_name.startswith(registry):
+        return 2
     registry_tokens = set(re.split(r"[-_]", registry)) - {""}
     repo_tokens = set(re.split(r"[-_]", repo_name)) - {""}
     if registry_tokens and repo_tokens:
         if registry_tokens <= repo_tokens or repo_tokens <= registry_tokens:
-            return 2
+            return 3
     return None
 
 
@@ -214,6 +272,7 @@ def match_image_tags_to_git_refs(
     image_rows: list[dict[str, Any]],
     git_tags: list[dict[str, Any]],
     commit_repo_lookup: Any = None,
+    workflow_names_lookup: Any = None,
 ) -> list[dict[str, Any]]:
     """
     Resolve image tags to (repository, Git ref) matches.
@@ -225,7 +284,9 @@ def match_image_tags_to_git_refs(
        list[matching_repo_urls]`` backed by the GitHub commits API.
     2. tag_semver: a version at the start of the image tag equals a Git tag
        (ignoring a leading "v"). Unique across repos matches directly; a
-       registry/repo name comparison breaks ties.
+       registry/repo name comparison breaks ties, consulting
+       ``workflow_names_lookup``, a callable ``(repo_url) -> set[str]`` of
+       image names the repository's workflows declare.
 
     Returns matchlink rows for GitHubRepoTagRefPackagedFromMatchLink. Emits at
     most one match per image digest; ambiguous evidence produces no match.
@@ -292,6 +353,7 @@ def match_image_tags_to_git_refs(
                 continue
             if not tagged and commit_repo_lookup is not None:
                 if fragment not in fragment_cache:
+
                     def lookup_order(url: str) -> tuple[bool, int, str]:
                         rank = _registry_repo_match_rank(registry_name, url)
                         return (rank is None, rank if rank is not None else 0, url)
@@ -321,7 +383,12 @@ def match_image_tags_to_git_refs(
             if len(candidates) > 1:
                 ranked: dict[int, set[str]] = {}
                 for url in candidates:
-                    rank = _registry_repo_match_rank(registry_name, url)
+                    declared = (
+                        workflow_names_lookup(url)
+                        if workflow_names_lookup is not None
+                        else None
+                    )
+                    rank = _registry_repo_match_rank(registry_name, url, declared)
                     if rank is not None:
                         ranked.setdefault(rank, set()).add(url)
                 if ranked:
@@ -804,10 +871,36 @@ def sync(
                     break
             return hits
 
+        workflow_paths_by_repo: dict[str, list[str]] = {}
+        for wf in workflows or []:
+            wf_repo_url, wf_path = wf.get("repo_url"), wf.get("path")
+            if wf_repo_url and wf_path:
+                workflow_paths_by_repo.setdefault(wf_repo_url, []).append(wf_path)
+        workflow_names_cache: dict[str, set[str]] = {}
+
+        def workflow_names_lookup(repo_url: str) -> set[str]:
+            if repo_url in workflow_names_cache:
+                return workflow_names_cache[repo_url]
+            names: set[str] = set()
+            owner_repo = repo_url.rstrip("/").rsplit("/", 2)[-2:]
+            if len(owner_repo) == 2:
+                owner, repo_name = owner_repo
+                paths = workflow_paths_by_repo.get(repo_url, [])
+                paths = paths[:_MAX_WORKFLOW_FILES_PER_REPO]
+                for path in paths:
+                    content = get_file_content(
+                        token, owner, repo_name, path, base_url=base_url
+                    )
+                    if content:
+                        names |= _extract_workflow_image_names(content)
+            workflow_names_cache[repo_url] = names
+            return names
+
         tag_ref_matches = match_image_tags_to_git_refs(
             image_tag_rows,
             org_git_tags,
             commit_repo_lookup,
+            workflow_names_lookup,
         )
         if tag_ref_matches:
             logger.info(
