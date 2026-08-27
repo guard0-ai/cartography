@@ -1,3 +1,4 @@
+from cartography.intel.github.supply_chain import _registry_repo_match_rank
 from cartography.intel.github.supply_chain import _registry_repo_name_matches
 from cartography.intel.github.supply_chain import match_image_tags_to_git_refs
 
@@ -149,3 +150,73 @@ def test_registry_repo_name_matches():
     assert not _registry_repo_name_matches("unrelated", f"{ORG}/frontend")
     assert not _registry_repo_name_matches(None, f"{ORG}/frontend")
     assert not _registry_repo_name_matches("", f"{ORG}/frontend")
+
+
+def test_registry_match_rank_tiers():
+    assert _registry_repo_match_rank("billing", f"{ORG}/billing") == 0
+    assert _registry_repo_match_rank("acme-prod-docker/billing", f"{ORG}/billing") == 0
+    assert _registry_repo_match_rank("billing-service", f"{ORG}/billing") == 1
+    assert _registry_repo_match_rank("worker-billing", f"{ORG}/billing") == 2
+    assert _registry_repo_match_rank("unrelated", f"{ORG}/billing") is None
+
+
+def test_semver_collision_resolved_for_namespaced_registry():
+    git_tags = [
+        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/billing"},
+        {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/ledger"},
+    ]
+    rows = [
+        {
+            "digest": "sha256:d20",
+            "tag": "0.0.7",
+            "registry_name": "acme-prod-docker/billing",
+        },
+    ]
+
+    matches = match_image_tags_to_git_refs(rows, git_tags)
+
+    assert len(matches) == 1
+    assert matches[0]["repo_url"] == f"{ORG}/billing"
+    assert matches[0]["match_method"] == "tag_semver"
+
+
+def test_semver_collision_resolved_by_token_subset():
+    git_tags = [
+        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/billing"},
+        {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/ledger"},
+    ]
+    rows = [
+        {"digest": "sha256:d21", "tag": "0.0.7", "registry_name": "worker-billing"},
+    ]
+
+    matches = match_image_tags_to_git_refs(rows, git_tags)
+
+    assert len(matches) == 1
+    assert matches[0]["repo_url"] == f"{ORG}/billing"
+
+
+def test_semver_collision_exact_name_beats_token_subset():
+    git_tags = [
+        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/gateway"},
+        {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/llm-gateway"},
+    ]
+    rows = [
+        {"digest": "sha256:d22", "tag": "0.0.7", "registry_name": "llm-gateway"},
+    ]
+
+    matches = match_image_tags_to_git_refs(rows, git_tags)
+
+    assert len(matches) == 1
+    assert matches[0]["repo_url"] == f"{ORG}/llm-gateway"
+
+
+def test_semver_collision_ambiguous_within_strongest_rank_is_not_matched():
+    git_tags = [
+        {"name": "v0.0.7", "commit_sha": "1" * 40, "repo_url": f"{ORG}/billing-service"},
+        {"name": "v0.0.7", "commit_sha": "2" * 40, "repo_url": f"{ORG}/billing-ui"},
+    ]
+    rows = [
+        {"digest": "sha256:d23", "tag": "0.0.7", "registry_name": "billing"},
+    ]
+
+    assert match_image_tags_to_git_refs(rows, git_tags) == []

@@ -178,17 +178,36 @@ def get_org_git_tags(
     return [dict(record) for record in result]
 
 
-def _registry_repo_name_matches(registry_name: str | None, repo_url: str) -> bool:
+def _registry_repo_match_rank(registry_name: str | None, repo_url: str) -> int | None:
     """
-    Whether a container registry name plausibly refers to a Git repository,
-    e.g. registry "billing-service" and repo ".../billing". One name must be a
-    prefix of the other, so unrelated repos sharing a version don't tie.
+    Rank how strongly a container registry name refers to a Git repository,
+    strongest first: 0 the names are equal, 1 one name is a prefix of the
+    other (registry "billing-service", repo ".../billing"), 2 one name's
+    hyphen/underscore tokens are a subset of the other's (registry
+    "worker-billing", repo ".../billing"). None means no correspondence.
+    Only the registry name's last path segment is compared, because registry
+    namespaces ("acme-prod-docker/billing") describe the environment, not the
+    service.
     """
     if not registry_name:
-        return False
-    registry = registry_name.lower()
+        return None
+    registry = registry_name.lower().rsplit("/", 1)[-1]
     repo_name = repo_url.rstrip("/").rsplit("/", 1)[-1].lower()
-    return registry.startswith(repo_name) or repo_name.startswith(registry)
+    if registry == repo_name:
+        return 0
+    if registry.startswith(repo_name) or repo_name.startswith(registry):
+        return 1
+    registry_tokens = set(re.split(r"[-_]", registry)) - {""}
+    repo_tokens = set(re.split(r"[-_]", repo_name)) - {""}
+    if registry_tokens and repo_tokens:
+        if registry_tokens <= repo_tokens or repo_tokens <= registry_tokens:
+            return 2
+    return None
+
+
+def _registry_repo_name_matches(registry_name: str | None, repo_url: str) -> bool:
+    """Whether a container registry name plausibly refers to a Git repository."""
+    return _registry_repo_match_rank(registry_name, repo_url) is not None
 
 
 def match_image_tags_to_git_refs(
@@ -273,13 +292,13 @@ def match_image_tags_to_git_refs(
                 continue
             if not tagged and commit_repo_lookup is not None:
                 if fragment not in fragment_cache:
-                    ordered = sorted(
-                        all_repo_urls,
-                        key=lambda url: (
-                            not _registry_repo_name_matches(registry_name, url),
-                            url,
-                        ),
-                    )[:_MAX_COMMIT_LOOKUP_REPOS]
+                    def lookup_order(url: str) -> tuple[bool, int, str]:
+                        rank = _registry_repo_match_rank(registry_name, url)
+                        return (rank is None, rank if rank is not None else 0, url)
+
+                    ordered = sorted(all_repo_urls, key=lookup_order)[
+                        :_MAX_COMMIT_LOOKUP_REPOS
+                    ]
                     fragment_cache[fragment] = commit_repo_lookup(fragment, ordered)
                 hits = fragment_cache[fragment]
                 if len(hits) == 1:
@@ -300,19 +319,24 @@ def match_image_tags_to_git_refs(
                 )
                 continue
             if len(candidates) > 1:
-                named = {
-                    url
-                    for url in candidates
-                    if _registry_repo_name_matches(registry_name, url)
-                }
-                if len(named) == 1:
-                    emit(
-                        digest,
-                        next(iter(named)),
-                        "tag_semver",
-                        version,
-                        _TAG_SEMVER_NAME_TIEBREAK_CONFIDENCE,
-                    )
+                ranked: dict[int, set[str]] = {}
+                for url in candidates:
+                    rank = _registry_repo_match_rank(registry_name, url)
+                    if rank is not None:
+                        ranked.setdefault(rank, set()).add(url)
+                if ranked:
+                    # The strongest populated rank decides; weaker ranks are
+                    # never consulted once a stronger one names any candidate,
+                    # and a rank naming several candidates is ambiguous.
+                    named = ranked[min(ranked)]
+                    if len(named) == 1:
+                        emit(
+                            digest,
+                            next(iter(named)),
+                            "tag_semver",
+                            version,
+                            _TAG_SEMVER_NAME_TIEBREAK_CONFIDENCE,
+                        )
 
     return list(matches.values())
 
