@@ -172,9 +172,20 @@ def test_extract_workflow_image_names():
           docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/acme-prod/ledger:v1
           docker push ghcr.io/acme/frontend:latest
           docker tag $ECR_REGISTRY/payments:$TAG something
+          docker push "${{ env.ACR_LOGIN_SERVER }}/reports"
+          docker push "${{ secrets.DOCKERHUB_USERNAME }}/notifier"
+          echo "${GITHUB_REPOSITORY}/not-an-image"
     """
     names = _extract_workflow_image_names(text)
-    assert names == {"billing-api", "shield-train", "ledger", "frontend", "payments"}
+    assert names == {
+        "billing-api",
+        "shield-train",
+        "ledger",
+        "frontend",
+        "payments",
+        "reports",
+        "notifier",
+    }
 
 
 def test_semver_collision_resolved_by_workflow_declared_name():

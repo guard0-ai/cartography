@@ -188,9 +188,14 @@ _WORKFLOW_REGISTRY_URL_RE = re.compile(
     r"/([\w][\w./_-]*)"
 )
 # A literal image name appended to a registry-valued variable, e.g.
-# "${{ env.AWS_ECR_REGISTRY }}/billing" or "$ECR_REGISTRY/billing".
+# "${{ env.AWS_ECR_REGISTRY }}/billing" or "$ECR_REGISTRY/billing". The
+# variable-name tokens are deliberately registry-specific (ACR_LOGIN_SERVER,
+# DOCKERHUB_USERNAME, QUAY_*); loose tokens like REPO or IMAGE would capture
+# path segments of variables such as GITHUB_REPOSITORY.
+_WORKFLOW_VARIABLE_REGISTRY_TOKENS = r"(?:REGISTRY|ECR|LOGIN_SERVER|DOCKERHUB|QUAY)"
 _WORKFLOW_VARIABLE_REGISTRY_RE = re.compile(
-    r"\$(?:\{\{[^}]*(?:REGISTRY|ECR)[^}]*\}\}|\{?[A-Za-z_]*(?:REGISTRY|ECR)[A-Za-z_]*\}?)"
+    r"\$(?:\{\{[^}]*" + _WORKFLOW_VARIABLE_REGISTRY_TOKENS + r"[^}]*\}\}"
+    r"|\{?[A-Za-z_]*" + _WORKFLOW_VARIABLE_REGISTRY_TOKENS + r"[A-Za-z_]*\}?)"
     r"[\"']?/([A-Za-z0-9][\w.-]*)"
 )
 # Values assigned to image-name keys, e.g. "DOCKER_IMAGE_NAME: billing" or
