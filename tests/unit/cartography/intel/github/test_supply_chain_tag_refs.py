@@ -312,3 +312,34 @@ def test_semver_collision_ambiguous_within_strongest_rank_is_not_matched():
     ]
 
     assert match_image_tags_to_git_refs(rows, git_tags) == []
+
+
+def test_get_workflow_file_paths_filters_and_tolerates_errors(monkeypatch):
+    import requests
+
+    from cartography.intel.github import supply_chain
+
+    listing = [
+        {"type": "file", "path": ".github/workflows/publish.yml"},
+        {"type": "file", "path": ".github/workflows/deploy.yaml"},
+        {"type": "file", "path": ".github/workflows/README.md"},
+        {"type": "dir", "path": ".github/workflows/shared"},
+    ]
+    monkeypatch.setattr(
+        supply_chain,
+        "call_github_rest_api",
+        lambda endpoint, token, base_url, params=None: listing,
+    )
+    paths = supply_chain.get_workflow_file_paths("t", "acme", "billing")
+    assert paths == [
+        ".github/workflows/publish.yml",
+        ".github/workflows/deploy.yaml",
+    ]
+
+    def forbidden(endpoint, token, base_url, params=None):
+        response = requests.Response()
+        response.status_code = 403
+        raise requests.exceptions.HTTPError(response=response)
+
+    monkeypatch.setattr(supply_chain, "call_github_rest_api", forbidden)
+    assert supply_chain.get_workflow_file_paths("t", "acme", "billing") == []

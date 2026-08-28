@@ -593,6 +593,45 @@ def search_dockerfiles_in_org(
     return all_items
 
 
+def get_workflow_file_paths(
+    token: str,
+    owner: str,
+    repo: str,
+    base_url: str = "https://api.github.com",
+) -> list[str]:
+    """
+    List a repository's workflow file paths (.github/workflows/*.yml|yaml)
+    using the Contents API. Returns an empty list when the directory does not
+    exist or is not accessible, mirroring get_file_content's error policy.
+    Unlike the Actions API, this needs only repository content read access.
+    """
+    endpoint = f"/repos/{owner}/{repo}/contents/.github/workflows"
+    try:
+        # The Contents API returns a list for a directory even though the
+        # helper is typed for the common single-object responses.
+        response: Any = call_github_rest_api(endpoint, token, base_url)
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code in (403, 404, 422):
+            logger.debug(
+                "Cannot list workflows for %s/%s: %d",
+                owner,
+                repo,
+                e.response.status_code,
+            )
+            return []
+        raise
+    if not isinstance(response, list):
+        return []
+    return [
+        entry["path"]
+        for entry in response
+        if isinstance(entry, dict)
+        and entry.get("type") == "file"
+        and isinstance(entry.get("path"), str)
+        and entry["path"].endswith((".yml", ".yaml"))
+    ]
+
+
 def get_file_content(
     token: str,
     owner: str,
@@ -891,6 +930,14 @@ def sync(
             if len(owner_repo) == 2:
                 owner, repo_name = owner_repo
                 paths = workflow_paths_by_repo.get(repo_url, [])
+                if not paths:
+                    # The Actions sync needs a permission many installations
+                    # lack, so its workflow list can be empty for a repo that
+                    # has workflows; fall back to listing the directory with
+                    # the Contents API this loop reads the files with anyway.
+                    paths = get_workflow_file_paths(
+                        token, owner, repo_name, base_url=base_url
+                    )
                 paths = paths[:_MAX_WORKFLOW_FILES_PER_REPO]
                 for path in paths:
                     content = get_file_content(
