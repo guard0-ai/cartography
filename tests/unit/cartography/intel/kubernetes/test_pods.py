@@ -180,11 +180,11 @@ def _owned_pod(name, labels, owner_references):
 
 def test_transform_pods_resolves_deployment_from_replicaset_owner():
     pod = _owned_pod(
-        "scheduler-worker-7d9f8b6c5-abcde",
+        "web-frontend-7d9f8b6c5-abcde",
         {"pod-template-hash": "7d9f8b6c5"},
         [
             SimpleNamespace(
-                kind="ReplicaSet", name="scheduler-worker-7d9f8b6c5", controller=True
+                kind="ReplicaSet", name="web-frontend-7d9f8b6c5", controller=True
             )
         ],
     )
@@ -192,9 +192,9 @@ def test_transform_pods_resolves_deployment_from_replicaset_owner():
     transformed = transform_pods([pod], "my-cluster-1")[0]
 
     assert transformed["owner_kind"] == "ReplicaSet"
-    assert transformed["owner_name"] == "scheduler-worker-7d9f8b6c5"
+    assert transformed["owner_name"] == "web-frontend-7d9f8b6c5"
     assert transformed["workload_kind"] == "Deployment"
-    assert transformed["workload_name"] == "scheduler-worker"
+    assert transformed["workload_name"] == "web-frontend"
 
 
 def test_transform_pods_strips_last_segment_when_template_hash_label_is_missing():
@@ -212,16 +212,16 @@ def test_transform_pods_strips_last_segment_when_template_hash_label_is_missing(
 
 def test_transform_pods_uses_non_replicaset_owner_as_workload():
     pod = _owned_pod(
-        "neo4j-0",
+        "database-0",
         {},
-        [SimpleNamespace(kind="StatefulSet", name="neo4j", controller=True)],
+        [SimpleNamespace(kind="StatefulSet", name="database", controller=True)],
     )
 
     transformed = transform_pods([pod], "my-cluster-1")[0]
 
     assert transformed["owner_kind"] == "StatefulSet"
     assert transformed["workload_kind"] == "StatefulSet"
-    assert transformed["workload_name"] == "neo4j"
+    assert transformed["workload_name"] == "database"
 
 
 def test_transform_pods_prefers_the_controller_owner_reference():
