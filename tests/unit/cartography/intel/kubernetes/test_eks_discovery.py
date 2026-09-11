@@ -16,7 +16,9 @@ from cartography.intel.kubernetes.eks_discovery import EKSTokenAuthenticator
 CLUSTER_NAME = "example-eks-cluster"
 CLUSTER_ARN = "arn:aws:eks:us-east-1:111122223333:cluster/example-eks-cluster"
 REGION = "us-east-1"
-CA_DATA = base64.b64encode(b"-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").decode()
+CA_DATA = base64.b64encode(
+    b"-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n"
+).decode()
 
 
 def _fake_boto3_session(eks_client):
@@ -105,9 +107,7 @@ def test_discover_eks_clusters_connects_each_discovered_cluster(monkeypatch):
     }
     session = _fake_boto3_session(eks_client)
     monkeypatch.setattr(eks_discovery, "_boto3_sessions", lambda _: [session])
-    monkeypatch.setattr(
-        eks_discovery, "_regions_for_session", lambda *_: [REGION]
-    )
+    monkeypatch.setattr(eks_discovery, "_regions_for_session", lambda *_: [REGION])
 
     discovered = discover_eks_clusters(aws_sync_all_profiles=False)
 
@@ -220,3 +220,62 @@ def test_discovery_sync_reports_degraded_clusters(monkeypatch):
     assert outcomes[0].succeeded == 2
     assert outcomes[0].failed == 0
     assert outcomes[0].degraded == 1
+
+
+def test_regions_for_session_prefers_requested_regions():
+    session = MagicMock()
+
+    regions = eks_discovery._regions_for_session(session, ["eu-west-1"])
+
+    assert regions == ["eu-west-1"]
+    session.client.assert_not_called()
+    session.get_available_regions.assert_not_called()
+
+
+def test_regions_for_session_uses_the_regions_enabled_on_the_account(monkeypatch):
+    session = MagicMock()
+    monkeypatch.setattr(
+        eks_discovery,
+        "get_ec2_regions",
+        lambda _: ["us-east-1", "eu-west-1"],
+    )
+
+    regions = eks_discovery._regions_for_session(session, None)
+
+    assert regions == ["us-east-1", "eu-west-1"]
+    session.get_available_regions.assert_not_called()
+
+
+def test_regions_for_session_falls_back_to_partition_regions(monkeypatch):
+    session = MagicMock()
+    session.get_available_regions.return_value = ["us-east-1", "me-south-1"]
+
+    def _denied(_):
+        raise botocore.exceptions.ClientError(
+            {"Error": {"Code": "UnauthorizedOperation", "Message": "denied"}},
+            "DescribeRegions",
+        )
+
+    monkeypatch.setattr(eks_discovery, "get_ec2_regions", _denied)
+
+    regions = eks_discovery._regions_for_session(session, None)
+
+    assert regions == ["us-east-1", "me-south-1"]
+    session.get_available_regions.assert_called_once_with("eks")
+
+
+def test_discovery_clients_fail_fast_on_unreachable_endpoints(monkeypatch):
+    eks_client = MagicMock()
+    eks_client.get_paginator.return_value.paginate.return_value = [{"clusters": []}]
+    session = _fake_boto3_session(eks_client)
+    monkeypatch.setattr(eks_discovery, "_boto3_sessions", lambda _: [session])
+    monkeypatch.setattr(eks_discovery, "_regions_for_session", lambda *_: [REGION])
+
+    discover_eks_clusters(aws_sync_all_profiles=False)
+
+    call = session.client.call_args
+    assert call.args[0] == "eks"
+    assert call.kwargs["region_name"] == REGION
+    config = call.kwargs["config"]
+    assert config.connect_timeout == eks_discovery._DISCOVERY_CONNECT_TIMEOUT_SECONDS
+    assert config.retries["max_attempts"] == eks_discovery._DISCOVERY_MAX_ATTEMPTS

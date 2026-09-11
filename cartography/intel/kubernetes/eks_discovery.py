@@ -6,12 +6,16 @@ from dataclasses import dataclass
 from typing import Any
 
 import boto3
+import botocore.config
 import botocore.exceptions
 from botocore.model import ServiceId
 from botocore.signers import RequestSigner
 from kubernetes.client import ApiClient
 from kubernetes.client import Configuration
 
+from cartography.intel.aws.ec2 import get_ec2_regions
+from cartography.intel.aws.util.botocore_config import create_boto3_client
+from cartography.intel.aws.util.botocore_config import get_botocore_config
 from cartography.intel.kubernetes.util import K8sClient
 
 logger = logging.getLogger(__name__)
@@ -21,6 +25,12 @@ logger = logging.getLogger(__name__)
 # 60-second X-Amz-Expires the URL is signed with.
 _TOKEN_MAX_AGE_SECONDS = 45
 _PRESIGNED_URL_EXPIRES_IN_SECONDS = 60
+
+# Discovery probes one EKS endpoint per enabled region. A regional endpoint
+# that drops the TCP handshake must fail fast: botocore's default client waits
+# 60 seconds per attempt, which stalled a sync for ten minutes per region.
+_DISCOVERY_CONNECT_TIMEOUT_SECONDS = 10
+_DISCOVERY_MAX_ATTEMPTS = 2
 
 
 @dataclass(frozen=True)
@@ -83,7 +93,10 @@ class EKSTokenAuthenticator:
 
     def refresh(self, configuration: Configuration) -> None:
         now = time.monotonic()
-        if self._signed_at is not None and now - self._signed_at < _TOKEN_MAX_AGE_SECONDS:
+        if (
+            self._signed_at is not None
+            and now - self._signed_at < _TOKEN_MAX_AGE_SECONDS
+        ):
             return
         configuration.api_key["authorization"] = self._mint_token()
         self._signed_at = now
@@ -152,9 +165,33 @@ def _regions_for_session(
     boto3_session: boto3.Session,
     requested_regions: list[str] | None,
 ) -> list[str]:
+    """
+    Regions to probe for EKS clusters: the caller's explicit list, else the
+    regions enabled on the account (ec2:DescribeRegions, the same source the
+    AWS module uses). The partition-wide region list is the last resort, for
+    credentials that cannot describe regions; it includes opt-in regions the
+    account never enabled, whose endpoints may not answer at all.
+    """
     if requested_regions:
         return requested_regions
-    return boto3_session.get_available_regions("eks")
+    try:
+        return get_ec2_regions(boto3_session)
+    except (
+        botocore.exceptions.ClientError,
+        botocore.exceptions.BotoCoreError,
+    ) as e:
+        logger.warning(
+            "Could not list the enabled regions for EKS discovery (%s); "
+            "probing every region in the AWS partition instead",
+            e,
+        )
+        return boto3_session.get_available_regions("eks")
+
+
+def _discovery_client_config() -> botocore.config.Config:
+    return get_botocore_config(max_attempts=_DISCOVERY_MAX_ATTEMPTS).merge(
+        botocore.config.Config(connect_timeout=_DISCOVERY_CONNECT_TIMEOUT_SECONDS),
+    )
 
 
 def discover_eks_clusters(
@@ -170,7 +207,12 @@ def discover_eks_clusters(
     discovered: list[DiscoveredEKSCluster] = []
     for boto3_session in _boto3_sessions(aws_sync_all_profiles):
         for region in _regions_for_session(boto3_session, requested_regions):
-            eks_client = boto3_session.client("eks", region_name=region)
+            eks_client = create_boto3_client(
+                boto3_session,
+                "eks",
+                region_name=region,
+                config=_discovery_client_config(),
+            )
             try:
                 cluster_names = [
                     name
