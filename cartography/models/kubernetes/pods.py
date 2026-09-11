@@ -30,6 +30,10 @@ class KubernetesPodNodeProperties(CartographyNodeProperties):
     seccomp_profile_type: PropertyRef = PropertyRef("seccomp_profile_type")
     host_path_volume_paths: PropertyRef = PropertyRef("host_path_volume_paths")
     labels: PropertyRef = PropertyRef("labels")
+    owner_kind: PropertyRef = PropertyRef("owner_kind")
+    owner_name: PropertyRef = PropertyRef("owner_name")
+    workload_kind: PropertyRef = PropertyRef("workload_kind", extra_index=True)
+    workload_name: PropertyRef = PropertyRef("workload_name", extra_index=True)
     cluster_name: PropertyRef = PropertyRef(
         "CLUSTER_NAME", set_in_kwargs=True, extra_index=True
     )

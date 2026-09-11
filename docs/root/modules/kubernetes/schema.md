@@ -153,6 +153,10 @@ Representation of a [Kubernetes Pod.](https://kubernetes.io/docs/concepts/worklo
 | seccomp\_profile\_type | Pod-level seccomp profile type when set, such as `RuntimeDefault`. Derived from `pod.spec.security_context.seccomp_profile.type`. |
 | host\_path\_volume\_paths | List of host filesystem paths mounted via `hostPath` pod volumes. Derived from `pod.spec.volumes[].host_path.path`. |
 | labels | Labels are key-value pairs contained in the `PodSpec` and fetched from `pod.metadata.labels`. Stored as a JSON-encoded string. |
+| owner\_kind | Kind of the controller that owns the pod (e.g. `ReplicaSet`, `StatefulSet`, `DaemonSet`, `Job`). Derived from `pod.metadata.owner_references`; unset for pods without an owner. |
+| owner\_name | Name of the controller that owns the pod. Derived from `pod.metadata.owner_references`. |
+| **workload\_kind** | Kind of the top-level workload the pod belongs to. A `ReplicaSet` owner resolves to `Deployment`; other owner kinds are used as-is; pods without an owner report `Pod`. |
+| **workload\_name** | Name of the top-level workload the pod belongs to. For Deployments the `pod-template-hash` suffix is stripped from the owning ReplicaSet's name; otherwise the owner name, or the pod name when unowned. |
 | **cluster\_name** | Name of the Kubernetes cluster where this pod is deployed |
 | node | Name of the Kubernetes node where this pod is currently scheduled and running. Fetched from `pod.spec.node_name`. |
 | architecture\_normalized | Canonical CPU architecture derived from the scheduled node when available (e.g. `amd64`, `arm64`). |

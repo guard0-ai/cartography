@@ -212,6 +212,51 @@ def _format_pod_labels(labels: dict[str, str]) -> str:
     return json.dumps(labels)
 
 
+def _resolve_pod_workload(pod: V1Pod) -> dict[str, str | None]:
+    """Resolve the controller that owns a pod and the top-level workload behind it.
+
+    Pods created by a Deployment are owned by a ReplicaSet whose name is
+    ``<deployment>-<pod-template-hash>``; the hash is also present as the
+    ``pod-template-hash`` label, so the Deployment name is recovered without
+    listing ReplicaSets (which the cluster grant may not permit). Every other
+    controller kind is already the top-level workload. Pods without an owner
+    are their own workload.
+    """
+    owner_kind: str | None = None
+    owner_name: str | None = None
+    for reference in getattr(pod.metadata, "owner_references", None) or []:
+        owner_kind = getattr(reference, "kind", None)
+        owner_name = getattr(reference, "name", None)
+        if getattr(reference, "controller", None):
+            break
+
+    if not owner_kind or not owner_name:
+        return {
+            "owner_kind": None,
+            "owner_name": None,
+            "workload_kind": "Pod",
+            "workload_name": pod.metadata.name,
+        }
+
+    workload_kind = owner_kind
+    workload_name = owner_name
+    if owner_kind == "ReplicaSet":
+        workload_kind = "Deployment"
+        template_hash = (pod.metadata.labels or {}).get("pod-template-hash")
+        suffix = f"-{template_hash}" if template_hash else None
+        if suffix and owner_name.endswith(suffix) and len(owner_name) > len(suffix):
+            workload_name = owner_name[: -len(suffix)]
+        elif "-" in owner_name:
+            workload_name = owner_name.rsplit("-", 1)[0]
+
+    return {
+        "owner_kind": owner_kind,
+        "owner_name": owner_name,
+        "workload_kind": workload_kind,
+        "workload_name": workload_name,
+    }
+
+
 def transform_pods(
     pods: list[V1Pod],
     cluster_name: str,
@@ -225,6 +270,7 @@ def transform_pods(
         containers = _extract_pod_containers(pod, node_arch=node_arch)
         volume_secrets, env_secrets = _extract_pod_secrets(pod, cluster_name)
         service_account_name = pod.spec.service_account_name or "default"
+        workload = _resolve_pod_workload(pod)
         transformed_pods.append(
             {
                 "uid": pod.metadata.uid,
@@ -265,6 +311,10 @@ def transform_pods(
                 ),
                 "architecture_normalized": node_arch,
                 "labels": _format_pod_labels(pod.metadata.labels),
+                "owner_kind": workload["owner_kind"],
+                "owner_name": workload["owner_name"],
+                "workload_kind": workload["workload_kind"],
+                "workload_name": workload["workload_name"],
                 "containers": list(containers.values()),
                 "secret_volume_ids": volume_secrets,
                 "secret_env_ids": env_secrets,

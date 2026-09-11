@@ -45,6 +45,10 @@ def test_transform_pods_defaults_service_account_name():
             "node_id": "my-cluster-1/node-a",
             "architecture_normalized": None,
             "labels": "{}",
+            "owner_kind": None,
+            "owner_name": None,
+            "workload_kind": "Pod",
+            "workload_name": "default-sa-pod",
             "containers": [],
             "secret_volume_ids": [],
             "secret_env_ids": [],
@@ -151,3 +155,86 @@ def test_transform_pods_extracts_container_ports():
         {"container_port": 53, "protocol": "UDP", "name": "dns"},
         {"container_port": 9000, "protocol": "SCTP", "name": "sctp"},
     ]
+
+
+def _owned_pod(name, labels, owner_references):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            uid=f"uid-{name}",
+            name=name,
+            namespace="my-namespace",
+            creation_timestamp=None,
+            deletion_timestamp=None,
+            labels=labels,
+            owner_references=owner_references,
+        ),
+        spec=SimpleNamespace(
+            containers=[],
+            volumes=[],
+            node_name="node-a",
+            service_account_name="default",
+        ),
+        status=SimpleNamespace(phase="Running", container_statuses=[]),
+    )
+
+
+def test_transform_pods_resolves_deployment_from_replicaset_owner():
+    pod = _owned_pod(
+        "scheduler-worker-7d9f8b6c5-abcde",
+        {"pod-template-hash": "7d9f8b6c5"},
+        [
+            SimpleNamespace(
+                kind="ReplicaSet", name="scheduler-worker-7d9f8b6c5", controller=True
+            )
+        ],
+    )
+
+    transformed = transform_pods([pod], "my-cluster-1")[0]
+
+    assert transformed["owner_kind"] == "ReplicaSet"
+    assert transformed["owner_name"] == "scheduler-worker-7d9f8b6c5"
+    assert transformed["workload_kind"] == "Deployment"
+    assert transformed["workload_name"] == "scheduler-worker"
+
+
+def test_transform_pods_strips_last_segment_when_template_hash_label_is_missing():
+    pod = _owned_pod(
+        "api-5c6d7e8f9-xyz12",
+        {},
+        [SimpleNamespace(kind="ReplicaSet", name="api-5c6d7e8f9", controller=True)],
+    )
+
+    transformed = transform_pods([pod], "my-cluster-1")[0]
+
+    assert transformed["workload_kind"] == "Deployment"
+    assert transformed["workload_name"] == "api"
+
+
+def test_transform_pods_uses_non_replicaset_owner_as_workload():
+    pod = _owned_pod(
+        "neo4j-0",
+        {},
+        [SimpleNamespace(kind="StatefulSet", name="neo4j", controller=True)],
+    )
+
+    transformed = transform_pods([pod], "my-cluster-1")[0]
+
+    assert transformed["owner_kind"] == "StatefulSet"
+    assert transformed["workload_kind"] == "StatefulSet"
+    assert transformed["workload_name"] == "neo4j"
+
+
+def test_transform_pods_prefers_the_controller_owner_reference():
+    pod = _owned_pod(
+        "worker-abc",
+        {},
+        [
+            SimpleNamespace(kind="ConfigMap", name="settings", controller=False),
+            SimpleNamespace(kind="DaemonSet", name="worker", controller=True),
+        ],
+    )
+
+    transformed = transform_pods([pod], "my-cluster-1")[0]
+
+    assert transformed["owner_kind"] == "DaemonSet"
+    assert transformed["workload_name"] == "worker"
